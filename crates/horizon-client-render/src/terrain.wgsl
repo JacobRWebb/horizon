@@ -27,6 +27,12 @@ struct Globals {
     // The sunrise fan's 16 triangles (gfx/sunrise_fan.rs): xyz the apex weight's normal, w the
     // triangle's volume with the camera; then each rim vertex's normal against the apex.
     sunrise_fan: array<vec4<f32>, 32>,
+    // x, y, z: the sprite layers, plus 1 (0: none), of nether_portal, lava_still and lava_flow.
+    special: vec4<f32>,
+    // x, y, z, w: the same for fire_0, fire_1, soul_fire_0 and soul_fire_1.
+    special_b: vec4<f32>,
+    // xyz: the camera's position modulo 256 (the procedural noise's period); w: seconds.
+    camera: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -74,6 +80,8 @@ struct TerrainOut {
     @location(4) cylindrical: f32,
     // The light the face emits, 0 to 15 (mesher.rs's `EMISSION_BITS`).
     @location(5) @interpolate(flat) emission: u32,
+    // The camera-relative position.
+    @location(6) rel: vec3<f32>,
 }
 // Horizon Extras' dynamic lights (dynamic_light.rs): the block light, in the vertex's units
 // (16 per level), a vertex at camera-relative `pos` gets from the frame's light sources, one
@@ -128,6 +136,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     let block = max(f32(light.y), dynamic_block_light(pos));
     out.color = vec4(color.rgb, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
+    out.rel = pos;
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
     return out;
@@ -142,10 +151,167 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
                 linear_fog(cylindrical, globals.fog.z, globals.fog.w));
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }
+// Procedural noise for the portal and the lava: value noise on a lattice that repeats every 64
+// cells, sampled at multiples of 1/4 per block, so it repeats every 256 blocks like the
+// camera position it is offset by (`globals.camera`).
+fn hash3(p: vec3<i32>) -> f32 {
+    var h = u32(p.x & 63) * 374761393u + u32(p.y & 63) * 668265263u + u32(p.z & 63) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h = h ^ (h >> 16u);
+    return f32(h & 0xffffu) / 65535.0;
+}
+fn vnoise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let c = vec3<i32>(i);
+    let x0 = mix(hash3(c), hash3(c + vec3(1, 0, 0)), u.x);
+    let x1 = mix(hash3(c + vec3(0, 1, 0)), hash3(c + vec3(1, 1, 0)), u.x);
+    let x2 = mix(hash3(c + vec3(0, 0, 1)), hash3(c + vec3(1, 0, 1)), u.x);
+    let x3 = mix(hash3(c + vec3(0, 1, 1)), hash3(c + vec3(1, 1, 1)), u.x);
+    return mix(mix(x0, x1, u.y), mix(x2, x3, u.y), u.z);
+}
+// Three octaves, from one cell per 4 blocks: 0 to about 0.9.
+fn fbm3(p: vec3<f32>) -> f32 {
+    return vnoise3(p * 0.25) * 0.5 + vnoise3(p * 0.5) * 0.3 + vnoise3(p) * 0.2;
+}
+fn world_position(rel: vec3<f32>) -> vec3<f32> {
+    return rel + globals.camera.xyz;
+}
+// Lava, ray-marched a little way into the surface: slow plates of crust drifting on a warped
+// flow, with white-hot cracks between them that burn deeper than the crust is thick.
+fn lava_surface(rel: vec3<f32>, flowing: bool) -> vec3<f32> {
+    let t = globals.camera.w;
+    let dir = normalize(rel);
+    let world = world_position(rel);
+    let drift = select(vec3(0.03, 0.0, 0.02), vec3(0.0, -0.16, 0.0), flowing) * t;
+    let warp = vec3(
+        fbm3(world * 0.5 + drift + vec3(0.0, t * 0.02, 0.0)),
+        fbm3(world * 0.5 + drift + vec3(17.0, 0.0, t * 0.02)),
+        fbm3(world * 0.5 + drift + vec3(5.0, 11.0, 0.0)),
+    );
+    var heat = 0.0;
+    var crust = 0.0;
+    let p = world + (warp - 0.4) * 3.0;
+    for (var i = 0; i < 4; i++) {
+        let deep = f32(i);
+        let q = p + dir * (deep * 0.14);
+        let n = fbm3(q * 1.0 + drift * 2.0);
+        // Ridged noise: the cracks are where it crosses the middle.
+        let ridge = 1.0 - abs(2.0 * n - 0.9);
+        heat += pow(clamp(ridge, 0.0, 1.0), 5.0) * (1.0 - deep * 0.2);
+        if i == 0 {
+            crust = fbm3(q * 2.0 + vec3(0.0, t * 0.05, 0.0));
+        }
+    }
+    heat = clamp(heat * 1.4, 0.0, 1.4);
+    let pulse = 0.88 + 0.12 * sin(t * 1.6 + warp.x * 9.0);
+    let dark = vec3(0.07, 0.012, 0.006) + crust * vec3(0.16, 0.035, 0.012);
+    let ember = mix(vec3(0.55, 0.05, 0.0), vec3(1.0, 0.36, 0.03), smoothstep(0.0, 0.7, heat));
+    let hot = mix(ember, vec3(1.0, 0.86, 0.4), smoothstep(0.7, 1.3, heat));
+    let glow = smoothstep(0.05, 0.9, heat);
+    // Even the crust glows a little, as if lit from below.
+    return mix(dark, hot * pulse * 1.25, glow) + vec3(0.12, 0.02, 0.0) * (1.0 - crust);
+}
+// The Nether portal as a volume of gas: marched a block and a half behind the face, ribbons of
+// violet and magenta churning and swaying, with pale cores where the gas is thickest.
+fn portal_gas(rel: vec3<f32>) -> vec4<f32> {
+    let t = globals.camera.w;
+    let dir = normalize(rel);
+    let world = world_position(rel);
+    var trans = 1.0;
+    var acc = vec3(0.0);
+    let steps = 18;
+    let dt = 1.6 / f32(steps);
+    for (var i = 0; i < steps; i++) {
+        var p = world + dir * (f32(i) + 0.5) * dt;
+        // Waves: the whole sheet sways.
+        p += 0.22 * vec3(
+            sin(p.y * 2.9 + t * 1.3 + p.z * 1.7),
+            sin(p.z * 2.3 + t * 0.9 + p.x * 1.9),
+            sin(p.x * 2.7 + t * 1.1 + p.y * 1.3),
+        );
+        let flow = vec3(t * 0.12, -t * 0.34, t * 0.09);
+        let n = fbm3(p * 1.5 + flow);
+        let m = fbm3(p * 2.5 - flow * 1.6 + vec3(n * 3.0));
+        let density = smoothstep(0.28, 0.85, n * 0.7 + m * 0.5);
+        let ribbon = pow(1.0 - abs(2.0 * m - 0.9), 3.0);
+        let a = 1.0 - exp(-density * dt * 5.0);
+        let violet = vec3(0.30, 0.04, 0.62);
+        let magenta = vec3(0.92, 0.22, 1.0);
+        var c = mix(violet, magenta, clamp(ribbon + n * 0.4, 0.0, 1.0));
+        c = mix(c, vec3(1.0, 0.82, 1.0), pow(density, 3.0) * 0.7);
+        acc += trans * a * c;
+        trans *= 1.0 - a;
+    }
+    let alpha = 1.0 - trans;
+    // A faint glow where the gas is thin, so the doorway never reads as empty.
+    let base = vec3(0.2, 0.03, 0.4);
+    let color = (acc + trans * base * 0.5) / max(alpha + trans * 0.5, 0.001);
+    return vec4(color * 1.15, mix(0.55, 0.96, alpha));
+}
+// Fire as a volume of flame: marched half a block through the quad it is drawn on, tongues
+// licking up on a rising, swaying noise, hottest and whitest at the base and cooling through
+// yellow and orange to dark red at the tips. The quad has no soft edge, so the flame is dithered
+// (TAA smooths it).
+fn fire_flame(rel: vec3<f32>, uv: vec2<f32>, soul: bool) -> vec4<f32> {
+    let t = globals.camera.w;
+    let dir = normalize(rel);
+    let world = world_position(rel);
+    // Fire fills its block's height: the quad's top is uv.y = 0.
+    let h0 = clamp(1.0 - uv.y, 0.0, 1.0);
+    let base_y = world.y - h0;
+    let edge = smoothstep(0.55, 1.0, abs(uv.x * 2.0 - 1.0));
+    var trans = 1.0;
+    var acc = vec3(0.0);
+    let steps = 8;
+    let dt = 0.5 / f32(steps);
+    for (var i = 0; i < steps; i++) {
+        let p = world + dir * (f32(i) + 0.5) * dt;
+        let h = clamp(p.y - base_y, 0.0, 1.3);
+        // Tongues: stretched up, sliding up, swaying from side to side.
+        let sway = vec3(sin(t * 3.1 + p.y * 4.0 + p.z * 3.0), 0.0, sin(t * 2.6 + p.y * 3.5 + p.x * 3.0))
+            * (0.12 * h);
+        let q = (p + sway) * vec3(4.0, 1.4, 4.0) + vec3(0.0, -t * 3.2, 0.0);
+        let n = fbm3(q) * 1.25;
+        let fine = vnoise3(q * 2.0 + vec3(0.0, -t * 5.0, 0.0));
+        let density = n + fine * 0.25 - h * 1.05 + 0.5 - edge * 0.7;
+        let heat = clamp(density * 1.3 + (1.0 - h) * 0.45, 0.0, 1.5);
+        var c: vec3<f32>;
+        if soul {
+            c = mix(vec3(0.02, 0.12, 0.45), vec3(0.1, 0.55, 1.0), smoothstep(0.0, 0.6, heat));
+            c = mix(c, vec3(0.75, 1.0, 1.0), smoothstep(0.7, 1.4, heat));
+        } else {
+            c = mix(vec3(0.5, 0.04, 0.0), vec3(1.0, 0.33, 0.02), smoothstep(0.0, 0.5, heat));
+            c = mix(c, vec3(1.0, 0.8, 0.2), smoothstep(0.5, 1.0, heat));
+            c = mix(c, vec3(1.0, 0.97, 0.8), smoothstep(1.0, 1.5, heat));
+        }
+        let a = 1.0 - exp(-clamp(density, 0.0, 2.0) * dt * 22.0);
+        acc += trans * a * c;
+        trans *= 1.0 - a;
+    }
+    let alpha = 1.0 - trans;
+    return vec4(acc / max(alpha, 0.001) * 1.25, alpha);
+}
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    let own_layer = (in.layer & 0x7fffu) + 1u;
+    if own_layer == u32(globals.special.y) || own_layer == u32(globals.special.z) {
+        let lit = lava_surface(in.rel, own_layer == u32(globals.special.z))
+            * (0.6 + 0.4 * in.color.rgb);
+        return apply_fog(vec4(lit, 0.0), in.spherical, in.cylindrical);
+    }
+    let fire_layer = vec4<u32>(globals.special_b);
+    if any(vec4<u32>(own_layer) == fire_layer) {
+        let soul = own_layer == fire_layer.z || own_layer == fire_layer.w;
+        let flame = fire_flame(in.rel, in.uv, soul);
+        let dither = fract(52.9829189 * fract(dot(in.clip.xy + globals.camera.w * 61.0,
+            vec2(0.06711056, 0.00583715))));
+        if flame.a <= dither { discard; }
+        return apply_fog(vec4(flame.rgb, 0.0), in.spherical, in.cylindrical);
+    }
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
     // may shine. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.0, in.emission > 0u);
@@ -154,6 +320,11 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if color.a < 0.01 { discard; }
+    if (in.layer & 0x7fffu) + 1u == u32(globals.special.x) {
+        let gas = portal_gas(in.rel);
+        return apply_fog(vec4(gas.rgb * (0.75 + 0.25 * in.color.rgb), gas.a),
+            in.spherical, in.cylindrical);
+    }
     return apply_fog(color, in.spherical, in.cylindrical);
 }
 

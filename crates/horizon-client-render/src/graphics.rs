@@ -393,6 +393,9 @@ pub struct Graphics {
     pub atmosphere: bool,
     pub atmosphere_density: u32,
     pub atmosphere_shafts: u32,
+    /// The Nether portal as churning gas and lava as cracked, glowing crust, drawn procedurally
+    /// (terrain.wgsl).
+    pub portal_lava: bool,
     /// Native water: the surface of water drawn with depth colour, waves, reflections, a sun
     /// glint, refraction and foam (`gfx::water`).
     pub water_shader: bool,
@@ -475,6 +478,7 @@ impl Default for Graphics {
             atmosphere: false,
             atmosphere_density: 100,
             atmosphere_shafts: 100,
+            portal_lava: false,
             water_shader: false,
             water_clarity: 14,
             water_depth_color: 100,
@@ -565,6 +569,7 @@ impl Graphics {
                 "cloudSteps" => g.cloud_steps = number(g.cloud_steps).clamp(32, 256),
                 "cloudVariety" => g.cloud_variety = number(g.cloud_variety).clamp(0, 30),
                 "atmosphere" => g.atmosphere = flag(g.atmosphere),
+                "portalLava" => g.portal_lava = flag(g.portal_lava),
                 "atmosphereDensity" => {
                     g.atmosphere_density = number(g.atmosphere_density).clamp(20, 300)
                 }
@@ -629,7 +634,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\ncloudRaymarch:{}\ncloudThickness:{}\ncloudDensity:{}\ncloudDetail:{}\ncloudSun:{}\ncloudAmbient:{}\ncloudSteps:{}\ncloudVariety:{}\natmosphere:{}\natmosphereDensity:{}\natmosphereShafts:{}\nwaterShader:{}\nwaterClarity:{}\nwaterDepthColor:{}\nwaterWaveHeight:{}\nwaterWaveSize:{}\nwaterWaveSpeed:{}\nwaterReflection:{}\nwaterGlint:{}\nwaterRefraction:{}\nwaterFoam:{}\nwaterFoamWidth:{}\nwaterReflectionSteps:{}\nwaterReflectionDistance:{}\nwaterSelfReflection:{}\nwaterUnderwater:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\ncloudRaymarch:{}\ncloudThickness:{}\ncloudDensity:{}\ncloudDetail:{}\ncloudSun:{}\ncloudAmbient:{}\ncloudSteps:{}\ncloudVariety:{}\natmosphere:{}\natmosphereDensity:{}\natmosphereShafts:{}\nportalLava:{}\nwaterShader:{}\nwaterClarity:{}\nwaterDepthColor:{}\nwaterWaveHeight:{}\nwaterWaveSize:{}\nwaterWaveSpeed:{}\nwaterReflection:{}\nwaterGlint:{}\nwaterRefraction:{}\nwaterFoam:{}\nwaterFoamWidth:{}\nwaterReflectionSteps:{}\nwaterReflectionDistance:{}\nwaterSelfReflection:{}\nwaterUnderwater:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -666,6 +671,7 @@ impl Graphics {
             bool_text(self.atmosphere),
             self.atmosphere_density,
             self.atmosphere_shafts,
+            bool_text(self.portal_lava),
             bool_text(self.water_shader),
             self.water_clarity,
             self.water_depth_color,
@@ -827,6 +833,7 @@ mod tests {
             atmosphere: true,
             atmosphere_density: 100,
             atmosphere_shafts: 100,
+            portal_lava: true,
             water_shader: true,
             water_clarity: 20,
             water_depth_color: 130,

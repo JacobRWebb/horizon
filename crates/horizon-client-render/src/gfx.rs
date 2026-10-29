@@ -238,6 +238,13 @@ struct Globals {
     dynamic_lights: [[f32; 4]; crate::dynamic_light::MAX],
     /// The sunrise fan's triangles as the sky shader tests them (`sunrise_fan::normals`).
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
+    /// The sprite layers, plus 1 (0: none), of `nether_portal`, `lava_still` and `lava_flow`:
+    /// terrain.wgsl draws them procedurally (as it does the fire in `special_b`).
+    special: [f32; 4],
+    /// The same for `fire_0`, `fire_1`, `soul_fire_0` and `soul_fire_1`.
+    special_b: [f32; 4],
+    /// The camera's position modulo 256, and seconds of game time.
+    camera: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -617,6 +624,8 @@ pub struct Renderer {
     water_on: bool,
     water_tuning: water::Tuning,
     water_layers: [u32; 2],
+    /// Sprite layers plus 1 of the portal and the lava, which terrain.wgsl draws procedurally.
+    special_layers: [u32; 7],
     water: Option<water::Water>,
     underwater: Option<underwater::Underwater>,
     /// The player's mirrored model (native water), its vertices, and whether the last frame
@@ -2815,6 +2824,7 @@ impl Renderer {
             water_on: false,
             water_tuning: Default::default(),
             water_layers: [u32::MAX; 2],
+            special_layers: [0; 7],
             water: None,
             underwater: None,
             own_body_buffer,
@@ -3484,6 +3494,13 @@ impl Renderer {
         self.atmosphere_on = on;
         self.atmosphere_tuning = tuning;
     }
+    /// Draws the Nether portal, lava and fire procedurally, given the sprite layers of
+    /// `nether_portal`, `lava_still`, `lava_flow`, `fire_0`, `fire_1`, `soul_fire_0` and
+    /// `soul_fire_1` (`u32::MAX` for one that is missing); `None` leaves them as vanilla.
+    pub fn set_special_layers(&mut self, layers: Option<[u32; 7]>) {
+        self.special_layers =
+            layers.map_or([0; 7], |l| l.map(|v| if v == u32::MAX { 0 } else { v + 1 }));
+    }
     /// Draws the surface of water with `water`'s look; `layers` are the sprite layers of
     /// `water_still` and `water_flow`.
     pub fn set_native_water(&mut self, on: bool, tuning: water::Tuning, layers: [u32; 2]) {
@@ -3997,6 +4014,27 @@ impl Renderer {
                 lights
             },
             sunrise_fan: sunrise_fan::normals(frame.sky.sunrise_color[3], sun),
+            special: [
+                self.special_layers[0] as f32,
+                self.special_layers[1] as f32,
+                self.special_layers[2] as f32,
+                0.0,
+            ],
+            special_b: [
+                self.special_layers[3] as f32,
+                self.special_layers[4] as f32,
+                self.special_layers[5] as f32,
+                self.special_layers[6] as f32,
+            ],
+            camera: [
+                frame.camera.x.rem_euclid(256.0) as f32,
+                frame.camera.y.rem_euclid(256.0) as f32,
+                frame.camera.z.rem_euclid(256.0) as f32,
+                ((f64::from(frame.game_time).floor()
+                    + f64::from(frame.shader_game_time * 24000.0).fract())
+                    / 20.0)
+                    .rem_euclid(1.0e5) as f32,
+            ],
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));

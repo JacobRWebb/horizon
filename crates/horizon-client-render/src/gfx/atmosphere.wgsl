@@ -97,6 +97,106 @@ fn shafts(pix: vec2<f32>, size: vec2<f32>, rd: vec3<f32>) -> f32 {
     return open / total * f * f * p.shaft.w * p.sun.w;
 }
 
+// The void's sea: below the world, a field of black swells marched like a height field.
+// The sea level, in blocks, and how far the swells rise and fall.
+const SEA_AMP: f32 = 12.0;
+fn sea_level(mode: i32) -> f32 {
+    return select(-110.0, -40.0, mode == 2);
+}
+fn sea_height(xz: vec2<f32>, t: f32) -> f32 {
+    // Slow rolling swells, a choppier layer on them and a fine ripple, all drifting.
+    let swell = noise_at(vec3(xz.x, t * 1.5, xz.y), 240.0).r - 0.5;
+    let chop = noise_at(vec3(xz.x + t * 3.0, t * 2.4, xz.y - t * 2.0), 80.0).r - 0.5;
+    let ripple = noise_at(vec3(xz.x - t * 4.0, t * 3.0, xz.y), 24.0).r - 0.5;
+    return swell * 18.0 + chop * 7.0 + ripple * 1.6;
+}
+fn sea_normal(xz: vec2<f32>, t: f32, e: f32) -> vec3<f32> {
+    let dx = sea_height(xz - vec2(e, 0.0), t) - sea_height(xz + vec2(e, 0.0), t);
+    let dz = sea_height(xz - vec2(0.0, e), t) - sea_height(xz + vec2(0.0, e), t);
+    return normalize(vec3(dx, 2.0 * e, dz));
+}
+// The sea seen along `rd` from `ro` (premultiplied, alpha 1 where there is sea).
+fn void_sea(ro: vec3<f32>, rd: vec3<f32>, mode: i32, time: f32, jitter: f32) -> vec4<f32> {
+    let y0 = sea_level(mode);
+    let top = y0 + SEA_AMP;
+    let haze = select(p.fog.rgb * 0.25, vec3(0.012, 0.006, 0.028), mode == 2);
+    if ro.y <= top || rd.y > -0.004 {
+        return vec4(0.0);
+    }
+    let t_in = (top - ro.y) / rd.y;
+    let t_out = (y0 - SEA_AMP - ro.y) / rd.y;
+    // Far out the sea is only haze.
+    let far = 3200.0;
+    if t_in > far {
+        return vec4(haze, 1.0);
+    }
+    let n = 30;
+    let span = min(t_out, far) - t_in;
+    var t = t_in + span / f32(n) * jitter;
+    let dt = span / f32(n);
+    var hit = -1.0;
+    var last = t_in;
+    for (var i = 0; i < n; i++) {
+        let pos = ro + rd * t;
+        if pos.y < y0 + sea_height(pos.xz, time) {
+            hit = t;
+            break;
+        }
+        last = t;
+        t += dt;
+    }
+    if hit < 0.0 {
+        return vec4(haze, 1.0);
+    }
+    // Bisect between the last step above the swells and the first below.
+    var lo = last;
+    var hi = hit;
+    for (var i = 0; i < 5; i++) {
+        let mid = 0.5 * (lo + hi);
+        let pos = ro + rd * mid;
+        if pos.y < y0 + sea_height(pos.xz, time) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let ts = 0.5 * (lo + hi);
+    let pos = ro + rd * ts;
+    let nrm = sea_normal(pos.xz, time, clamp(ts * 0.004, 0.5, 12.0));
+    let fres = 0.03 + 0.97 * pow(1.0 - max(dot(nrm, -rd), 0.0), 4.0);
+    let refl = reflect(rd, nrm);
+    var sky = vec3(0.0);
+    var glint = vec3(0.0);
+    var deep = vec3(0.0);
+    var crest_color = vec3(0.0);
+    if mode == 2 {
+        // Reflects the dark violet of the void and the nebula's gas.
+        let gas = noise_at(refl * 400.0, 400.0).r;
+        sky = mix(vec3(0.02, 0.008, 0.05), vec3(0.34, 0.12, 0.6), pow(clamp(gas * 1.4 - 0.2, 0.0, 1.0), 2.0));
+        deep = vec3(0.002, 0.001, 0.006);
+        crest_color = vec3(0.45, 0.14, 0.85);
+    } else {
+        sky = p.fog.rgb * 0.7;
+        glint = vec3(1.0, 0.9, 0.75) * pow(max(dot(refl, p.sun.xyz), 0.0), 220.0) * p.sun.w * 4.0;
+        deep = vec3(0.004, 0.01, 0.016);
+        crest_color = p.fog.rgb * 0.9;
+    }
+    // Crests catch the light: thin lines along the tops of the swells.
+    let rise = (pos.y - y0) / SEA_AMP;
+    let sheen = noise_at(vec3(pos.x * 1.7 + time * 2.0, 0.0, pos.z * 1.7), 120.0).r;
+    let crest = smoothstep(0.35, 0.85, rise) * smoothstep(0.45, 0.8, sheen);
+    var color = deep + sky * fres + glint + crest_color * crest * 0.55;
+    // A dark mist hangs over the swells, thicker in the troughs.
+    let t_mist = max((y0 + 60.0 - ro.y) / rd.y, 0.0);
+    let mist_len = max(ts - t_mist, 0.0);
+    let mist_noise = 0.4 + 1.2 * noise_at(pos * 0.5 + vec3(time * 2.0, 0.0, time), 300.0).r;
+    let mist = 1.0 - exp(-mist_len * 0.006 * mist_noise * p.fog.w);
+    color = mix(color, haze * 3.0 + crest_color * 0.04, mist);
+    // Distance melts into haze.
+    color = mix(color, haze, 1.0 - exp(-ts / 1500.0));
+    return vec4(color, 1.0);
+}
+
 @fragment fn fs_atmosphere(in: PostOut) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(depth_tex));
     let uv = in.clip.xy / size;
@@ -128,6 +228,11 @@ fn shafts(pix: vec2<f32>, size: vec2<f32>, rd: vec3<f32>) -> f32 {
     }
     var light = vec3(0.0);
     var trans = 1.0;
+    // Below the world, where nothing was drawn, lies the void's sea.
+    var behind = vec4(0.0);
+    if sky && mode != 1 {
+        behind = void_sea(origin, rd, mode, time, jitter);
+    }
     if t1 > t0 {
         let min_dt = (t1 - t0) / (f32(max_steps) * 0.9);
         var t = t0 + jitter * min_dt;
@@ -189,10 +294,11 @@ fn shafts(pix: vec2<f32>, size: vec2<f32>, rd: vec3<f32>) -> f32 {
                     let a = noise_at(q, 400.0);
                     let b = noise_at(q * 1.7 + vec3(a.r * 40.0), 240.0);
                     let d = smoothstep(0.42, 0.85, a.r * 0.65 + b.g * 0.5);
+                    let d_sky = d * smoothstep(-0.45, 0.05, rd.y);
                     let hue = smoothstep(0.3, 0.7, noise_at(q * 0.5, 600.0).r);
                     let gas = mix(vec3(0.55, 0.16, 0.85), vec3(0.12, 0.62, 0.78), hue);
                     let core = vec3(1.0, 0.72, 0.9) * smoothstep(0.78, 1.0, d) * 0.6;
-                    let sigma = d * 0.0045 * density;
+                    let sigma = d_sky * 0.0045 * density;
                     let step_trans = exp(-sigma * dt);
                     light += trans * ((1.0 - step_trans) * gas * 1.5 + core * sigma * dt * 3.0);
                     trans *= step_trans;
@@ -214,6 +320,8 @@ fn shafts(pix: vec2<f32>, size: vec2<f32>, rd: vec3<f32>) -> f32 {
             t += dt;
         }
     }
+    light += trans * behind.rgb;
+    trans *= 1.0 - behind.a;
     if mode == 0 {
         // Shafts sit in the fog: always a little, more where the fog is thick.
         let s = shafts(in.clip.xy, size, rd) * (0.3 + 0.7 * (1.0 - trans) * 3.0);

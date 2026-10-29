@@ -343,6 +343,17 @@ impl Game<'_> {
                     layer("minecraft:block/water_flow"),
                 ],
             );
+            r.set_special_layers(s.horizon.portal_lava.then(|| {
+                [
+                    layer("minecraft:block/nether_portal"),
+                    layer("minecraft:block/lava_still"),
+                    layer("minecraft:block/lava_flow"),
+                    layer("minecraft:block/fire_0"),
+                    layer("minecraft:block/fire_1"),
+                    layer("minecraft:block/soul_fire_0"),
+                    layer("minecraft:block/soul_fire_1"),
+                ]
+            }));
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,

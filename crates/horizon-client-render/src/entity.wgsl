@@ -23,6 +23,12 @@ struct Globals {
     // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
     dynamic_lights: array<vec4<f32>, 16>,
     sunrise_fan: array<vec4<f32>, 32>,
+    // x, y, z: the sprite layers, plus 1 (0: none), of nether_portal, lava_still and lava_flow.
+    special: vec4<f32>,
+    // x, y, z, w: the same for fire_0, fire_1, soul_fire_0 and soul_fire_1.
+    special_b: vec4<f32>,
+    // xyz: the camera's position modulo 256 (the procedural noise's period); w: seconds.
+    camera: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
