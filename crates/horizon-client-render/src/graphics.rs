@@ -387,6 +387,29 @@ pub struct Graphics {
     pub cloud_steps: u32,
     /// How far banks of ray-marched cloud sit higher or lower, in blocks.
     pub cloud_variety: u32,
+    /// Native water: the surface of water drawn with depth colour, waves, reflections, a sun
+    /// glint, refraction and foam (`gfx::water`).
+    pub water_shader: bool,
+    /// Native water: blocks of depth to the deep colour, then percent of the default (the
+    /// foam's width is in tenths of a block).
+    pub water_clarity: u32,
+    pub water_depth_color: u32,
+    pub water_wave_height: u32,
+    pub water_wave_size: u32,
+    pub water_wave_speed: u32,
+    pub water_reflection: u32,
+    pub water_glint: u32,
+    pub water_refraction: u32,
+    pub water_foam: u32,
+    pub water_foam_width: u32,
+    /// Native water: steps a reflected ray marches through the frame (0: the sky only), and
+    /// how far it looks, in blocks.
+    pub water_reflection_steps: u32,
+    pub water_reflection_distance: u32,
+    /// Native water: your own reflection, and how strongly the underwater look applies (percent
+    /// of the default; 0 is vanilla's underwater view).
+    pub water_self: bool,
+    pub water_underwater: u32,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
@@ -443,6 +466,21 @@ impl Default for Graphics {
             cloud_ambient: 100,
             cloud_steps: 128,
             cloud_variety: 6,
+            water_shader: false,
+            water_clarity: 14,
+            water_depth_color: 100,
+            water_wave_height: 100,
+            water_wave_size: 100,
+            water_wave_speed: 100,
+            water_reflection: 100,
+            water_glint: 100,
+            water_refraction: 100,
+            water_foam: 100,
+            water_foam_width: 16,
+            water_reflection_steps: 48,
+            water_reflection_distance: 64,
+            water_self: true,
+            water_underwater: 100,
             upscaling: Upscaling::Native,
             hdr: false,
             hdr_paper_white: 0,
@@ -517,6 +555,29 @@ impl Graphics {
                 "cloudAmbient" => g.cloud_ambient = number(g.cloud_ambient).clamp(20, 200),
                 "cloudSteps" => g.cloud_steps = number(g.cloud_steps).clamp(32, 256),
                 "cloudVariety" => g.cloud_variety = number(g.cloud_variety).clamp(0, 30),
+                "waterShader" => g.water_shader = flag(g.water_shader),
+                "waterClarity" => g.water_clarity = number(g.water_clarity).clamp(2, 40),
+                "waterDepthColor" => {
+                    g.water_depth_color = number(g.water_depth_color).clamp(20, 200)
+                }
+                "waterWaveHeight" => {
+                    g.water_wave_height = number(g.water_wave_height).clamp(0, 300)
+                }
+                "waterWaveSize" => g.water_wave_size = number(g.water_wave_size).clamp(50, 300),
+                "waterWaveSpeed" => g.water_wave_speed = number(g.water_wave_speed).clamp(0, 300),
+                "waterReflection" => g.water_reflection = number(g.water_reflection).clamp(0, 200),
+                "waterGlint" => g.water_glint = number(g.water_glint).clamp(0, 300),
+                "waterRefraction" => g.water_refraction = number(g.water_refraction).clamp(0, 300),
+                "waterFoam" => g.water_foam = number(g.water_foam).clamp(0, 150),
+                "waterFoamWidth" => g.water_foam_width = number(g.water_foam_width).clamp(2, 60),
+                "waterReflectionSteps" => {
+                    g.water_reflection_steps = number(g.water_reflection_steps).clamp(0, 96)
+                }
+                "waterSelfReflection" => g.water_self = flag(g.water_self),
+                "waterUnderwater" => g.water_underwater = number(g.water_underwater).clamp(0, 200),
+                "waterReflectionDistance" => {
+                    g.water_reflection_distance = number(g.water_reflection_distance).clamp(16, 128)
+                }
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => {
@@ -552,7 +613,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\ncloudRaymarch:{}\ncloudThickness:{}\ncloudDensity:{}\ncloudDetail:{}\ncloudSun:{}\ncloudAmbient:{}\ncloudSteps:{}\ncloudVariety:{}\nwaterShader:{}\nwaterClarity:{}\nwaterDepthColor:{}\nwaterWaveHeight:{}\nwaterWaveSize:{}\nwaterWaveSpeed:{}\nwaterReflection:{}\nwaterGlint:{}\nwaterRefraction:{}\nwaterFoam:{}\nwaterFoamWidth:{}\nwaterReflectionSteps:{}\nwaterReflectionDistance:{}\nwaterSelfReflection:{}\nwaterUnderwater:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -586,6 +647,21 @@ impl Graphics {
             self.cloud_ambient,
             self.cloud_steps,
             self.cloud_variety,
+            bool_text(self.water_shader),
+            self.water_clarity,
+            self.water_depth_color,
+            self.water_wave_height,
+            self.water_wave_size,
+            self.water_wave_speed,
+            self.water_reflection,
+            self.water_glint,
+            self.water_refraction,
+            self.water_foam,
+            self.water_foam_width,
+            self.water_reflection_steps,
+            self.water_reflection_distance,
+            bool_text(self.water_self),
+            self.water_underwater,
             self.upscaling.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
@@ -729,6 +805,21 @@ mod tests {
             cloud_ambient: 80,
             cloud_steps: 96,
             cloud_variety: 12,
+            water_shader: true,
+            water_clarity: 20,
+            water_depth_color: 130,
+            water_wave_height: 60,
+            water_wave_size: 150,
+            water_wave_speed: 80,
+            water_reflection: 110,
+            water_glint: 90,
+            water_refraction: 70,
+            water_foam: 120,
+            water_foam_width: 24,
+            water_reflection_steps: 64,
+            water_reflection_distance: 80,
+            water_self: false,
+            water_underwater: 150,
             upscaling: Upscaling::Balanced,
             hdr: true,
             hdr_paper_white: 240,

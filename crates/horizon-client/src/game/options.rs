@@ -306,6 +306,36 @@ impl Game<'_> {
                     variety: s.horizon.cloud_variety,
                 },
             );
+            let layer = |name: &str| {
+                self.pack
+                    .render
+                    .sprite_layers
+                    .get(name)
+                    .copied()
+                    .unwrap_or(u32::MAX)
+            };
+            r.set_native_water(
+                s.horizon.water_shader,
+                horizon_client::gfx::water::Tuning {
+                    clarity: s.horizon.water_clarity,
+                    depth_color: s.horizon.water_depth_color,
+                    wave_height: s.horizon.water_wave_height,
+                    wave_size: s.horizon.water_wave_size,
+                    wave_speed: s.horizon.water_wave_speed,
+                    reflection: s.horizon.water_reflection,
+                    glint: s.horizon.water_glint,
+                    refraction: s.horizon.water_refraction,
+                    foam: s.horizon.water_foam,
+                    foam_width: s.horizon.water_foam_width,
+                    reflection_steps: s.horizon.water_reflection_steps,
+                    reflection_distance: s.horizon.water_reflection_distance,
+                    underwater: s.horizon.water_underwater,
+                },
+                [
+                    layer("minecraft:block/water_still"),
+                    layer("minecraft:block/water_flow"),
+                ],
+            );
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,

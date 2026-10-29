@@ -27,6 +27,42 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
     wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
 
+/// The ray-marched clouds' pass over the world target `color`, up to `depth`.
+#[allow(clippy::too_many_arguments)]
+fn draw_raymarch_clouds(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    format: wgpu::TextureFormat,
+    slot: &mut Option<raymarch_clouds::RaymarchClouds>,
+    encoder: &mut wgpu::CommandEncoder,
+    color: &wgpu::TextureView,
+    depth: &wgpu::TextureView,
+    frame: &Frame,
+    view_proj: Mat4,
+    tuning: raymarch_clouds::Tuning,
+) {
+    let Some(input) = &frame.clouds else {
+        return;
+    };
+    let sky = &frame.sky;
+    slot.get_or_insert_with(|| raymarch_clouds::RaymarchClouds::new(device, queue, format))
+        .draw(
+            device,
+            queue,
+            encoder,
+            color,
+            depth,
+            &raymarch_clouds::Scene {
+                input,
+                view_proj,
+                sun_angle: sky.sun_angle,
+                fog_color: sky.fog_color,
+                fog_end: sky.cloud_fog_end,
+                tuning,
+            },
+        );
+}
+
 /// entity.wgsl after the OverlayTexture constants it reads.
 fn entity_shader() -> String {
     crate::overlay::wgsl_constants() + include_str!("entity.wgsl")
@@ -101,8 +137,10 @@ mod stars;
 mod sunrise_fan;
 mod timing;
 pub mod translucency;
+mod underwater;
 pub(crate) mod upload;
 mod view;
+pub mod water;
 mod wgsl_prefix;
 mod world_post;
 
@@ -293,6 +331,10 @@ pub struct Frame<'a> {
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
+    /// The player's own model, camera-relative, for native water to mirror (first person draws
+    /// none of it in the world), and the height of the water it is mirrored in.
+    pub own_body: &'a [Vertex],
+    pub own_body_plane: Option<f64>,
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
     pub clouds: Option<crate::clouds::Input<'a>>,
     /// Retained lightning bolts, drawn before the other additive entities.
@@ -562,6 +604,18 @@ pub struct Renderer {
     raymarch_clouds_on: bool,
     raymarch_tuning: raymarch_clouds::Tuning,
     raymarch_clouds: Option<raymarch_clouds::RaymarchClouds>,
+    /// Native water (Horizon setting), built when first drawn.
+    water_on: bool,
+    water_tuning: water::Tuning,
+    water_layers: [u32; 2],
+    water: Option<water::Water>,
+    underwater: Option<underwater::Underwater>,
+    /// The player's mirrored model (native water), its vertices, and whether the last frame
+    /// drew any (so it is cleared once when it goes).
+    own_body_buffer: wgpu::Buffer,
+    own_body_capacity: u64,
+    own_body_scratch: Vec<Vertex>,
+    own_body_drawn: bool,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
@@ -2498,6 +2552,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let own_body_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Mirrored player vertices"),
+            size: 1024 * std::mem::size_of::<Vertex>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let entity_capacity = 1 << 14;
         let entity_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Entity vertices"),
@@ -2739,6 +2799,15 @@ impl Renderer {
             raymarch_clouds_on: false,
             raymarch_tuning: Default::default(),
             raymarch_clouds: None,
+            water_on: false,
+            water_tuning: Default::default(),
+            water_layers: [u32::MAX; 2],
+            water: None,
+            underwater: None,
+            own_body_buffer,
+            own_body_capacity: 1024,
+            own_body_scratch: Vec::new(),
+            own_body_drawn: false,
             hdr: None,
             hdr_output,
             hdr_marker: None,
@@ -3397,6 +3466,13 @@ impl Renderer {
         self.raymarch_clouds_on = on;
         self.raymarch_tuning = tuning;
     }
+    /// Draws the surface of water with `water`'s look; `layers` are the sprite layers of
+    /// `water_still` and `water_flow`.
+    pub fn set_native_water(&mut self, on: bool, tuning: water::Tuning, layers: [u32; 2]) {
+        self.water_on = on && layers[0] != u32::MAX;
+        self.water_tuning = tuning;
+        self.water_layers = layers;
+    }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) pair.
     /// Returns the programs that run and the notes of loading them.
@@ -3794,6 +3870,10 @@ impl Renderer {
             && taa
             && !frame.underwater
             && frame.clouds.as_ref().is_some_and(|c| !c.fast);
+        // Native water reads a copy of the frame and its depth from before translucent terrain.
+        let water = self.water_on && taa && (!frame.underwater || self.water_tuning.underwater > 0);
+        // Native water's underwater look: the frame dimmed and lit by the water's own pass.
+        let underwater_look = water && frame.underwater && self.water_tuning.underwater > 0;
         let jittered = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,
@@ -3848,6 +3928,12 @@ impl Renderer {
                     [start, end, (d - d.min(64.0) * 0.25).max(0.0), d]
                 },
             )
+        };
+        // The underwater pass dims by distance itself: no vanilla fog on top of it.
+        let fog = if underwater_look {
+            [1.0e4, 2.0e4, 1.0e4, 2.0e4]
+        } else {
+            fog
         };
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
@@ -4503,6 +4589,7 @@ impl Renderer {
             );
         }
         let max_quads = (world_quads + additive_quads + hand_quads + see_through_quads)
+            .max(frame.own_body.len() as u32 / 4)
             .max(cloud_quads)
             .max(if frame.lightning.bolts.is_empty() {
                 0
@@ -4660,7 +4747,7 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth = pack_reads_world || raymarch || (taa && self.world_post.taa);
+        let keep_depth = pack_reads_world || raymarch || water || (taa && self.world_post.taa);
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -4704,8 +4791,31 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world || raymarch,
+            pack_reads_world || raymarch || water,
         );
+        if water && scaled.is_some() && self.water.is_none() {
+            let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
+            let vertex_buffer = || wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<TerrainVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &TERRAIN_ATTRIBUTES,
+            };
+            let instance_buffer = wgpu::VertexBufferLayout {
+                array_stride: 16,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &instance_attributes,
+            };
+            self.water = Some(water::Water::new(
+                &self.device,
+                self.config.format.remove_srgb_suffix(),
+                &self.terrain_layout,
+                self.flat.as_ref().map(|f| &f.draw_layout),
+                self.terrain_sprites,
+                &[Some(vertex_buffer()), Some(instance_buffer)],
+                &[Some(vertex_buffer())],
+            ));
+        }
+        let water = water && scaled.is_some() && self.water.is_some();
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
             None => (&view_target, &self.depth),
@@ -4725,6 +4835,8 @@ impl Renderer {
             }
         };
         let sky_visible = sky_open(frame);
+        // The ray-marched clouds were drawn before native water's copy of the frame.
+        let mut clouds_drawn = false;
         // One of Horizon's own packs: this frame's inputs; in a timed frame its sky draws in a
         // pass of its own, so that it has a time of its own.
         let mut native_sky_pass = false;
@@ -5050,11 +5162,143 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.debug_line_buffer.slice(..));
                 pass.draw(0..4, debug_depth..debug_depth + debug_top);
             }
+            // Native water: the frame so far and its depth, copied for the water to read.
+            if water
+                && !pack_draws_water
+                && let (Some((color, depth)), Some(native_water)) = (&scaled, &mut self.water)
+            {
+                drop(pass);
+                // The ray-marched clouds go in the copy, so the water can mirror them (they
+                // need only the opaque depth); the pass after the world then skips them.
+                if raymarch {
+                    draw_raymarch_clouds(
+                        &self.device,
+                        &self.queue,
+                        self.config.format.remove_srgb_suffix(),
+                        &mut self.raymarch_clouds,
+                        &mut encoder,
+                        color,
+                        depth,
+                        frame,
+                        jittered,
+                        self.raymarch_tuning,
+                    );
+                    clouds_drawn = true;
+                }
+                // Game time in seconds, smooth between ticks (the shader clock's fraction).
+                let partial = f64::from(frame.shader_game_time * 24000.0).fract();
+                native_water.capture(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    color.texture(),
+                    depth.texture(),
+                    &water::Scene {
+                        view_proj: jittered,
+                        camera: frame.camera,
+                        time: (f64::from(frame.game_time).floor() + partial) / 20.0,
+                        layers: self.water_layers,
+                        tuning: self.water_tuning,
+                        under: if underwater_look {
+                            let (_, day) = underwater::sun(frame.sky.sun_angle);
+                            let body = underwater::body_color(frame.water_fog, day);
+                            [
+                                body[0],
+                                body[1],
+                                body[2],
+                                self.water_tuning.underwater as f32 / 100.0,
+                            ]
+                        } else {
+                            [0.0; 4]
+                        },
+                    },
+                );
+                // Your own reflection: the model turned over in the water's plane, drawn from the
+                // real camera, which the water shader looks up pixel by pixel.
+                let mirrored = match frame.own_body_plane {
+                    Some(plane) if !frame.own_body.is_empty() => {
+                        water::mirror(
+                            frame.own_body,
+                            (plane - frame.camera.y) as f32,
+                            &mut self.own_body_scratch,
+                        );
+                        (self.own_body_scratch.len() / 4) as u32
+                    }
+                    _ => 0,
+                };
+                if (mirrored > 0 || self.own_body_drawn)
+                    && let Some((own_color, own_depth)) = native_water.own_attachments()
+                {
+                    if mirrored > 0 {
+                        let needed = self.own_body_scratch.len() as u64;
+                        if needed > self.own_body_capacity {
+                            self.own_body_capacity = needed.next_power_of_two();
+                            self.own_body_buffer =
+                                self.device.create_buffer(&wgpu::BufferDescriptor {
+                                    label: Some("Mirrored player vertices"),
+                                    size: self.own_body_capacity
+                                        * std::mem::size_of::<Vertex>() as u64,
+                                    usage: wgpu::BufferUsages::VERTEX
+                                        | wgpu::BufferUsages::COPY_DST,
+                                    mapped_at_creation: false,
+                                });
+                        }
+                        self.uploads.buffer(
+                            &mut encoder,
+                            &self.own_body_buffer,
+                            0,
+                            bytemuck::cast_slice(&self.own_body_scratch),
+                        );
+                    }
+                    let mut own = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Mirrored player"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: own_color,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: own_depth,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(0.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        ..Default::default()
+                    });
+                    if mirrored > 0 {
+                        own.set_pipeline(&self.entity_pipeline);
+                        own.set_bind_group(0, &self.entity_group, &[]);
+                        own.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        own.set_vertex_buffer(0, self.own_body_buffer.slice(..));
+                        own.draw_indexed(0..mirrored * 6, 0, 0..1);
+                    }
+                }
+                self.own_body_drawn = mirrored > 0;
+                pass = world_pass_after_culling(&mut encoder, world_view, world_depth, keep_depth);
+                pass.set_bind_group(0, &self.group, &[]);
+                pack_frame(&mut pass);
+            }
+            let native_water = self
+                .water
+                .as_ref()
+                .filter(|_| water && !pack_draws_water)
+                .and_then(|w| Some((w, w.pipeline(flat_frame && self.flat.is_some())?)));
             match self.flat.as_ref().filter(|_| flat_frame) {
                 // The pack draws translucent terrain after its deferred programs.
                 _ if pack_draws_water => {}
                 Some(flat) => {
-                    pass.set_pipeline(pack_flat.map_or(&flat.translucent, |p| &p.1));
+                    pass.set_pipeline(
+                        native_water.map_or(pack_flat.map_or(&flat.translucent, |p| &p.1), |w| w.1),
+                    );
+                    if let Some((w, _)) = native_water {
+                        w.bind(&mut pass, true);
+                    }
                     flat.draw(&mut pass, flat.translucent_calls(), |p| {
                         self.arena.buffer(p)
                     });
@@ -5062,7 +5306,10 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(translucent_pipeline);
+                    pass.set_pipeline(native_water.map_or(translucent_pipeline, |w| w.1));
+                    if let Some((w, _)) = native_water {
+                        w.bind(&mut pass, false);
+                    }
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     self.draw_sections(
@@ -5138,30 +5385,44 @@ impl Renderer {
                 );
             }
         }
-        if raymarch
-            && let Some((color, depth)) = &scaled
-            && let Some(input) = &frame.clouds
-        {
+        if underwater_look && let Some((color, depth)) = &scaled {
+            let partial = f64::from(frame.shader_game_time * 24000.0).fract();
             let format = self.config.format.remove_srgb_suffix();
-            let (device, queue) = (&self.device, &self.queue);
-            let sky = &frame.sky;
-            self.raymarch_clouds
-                .get_or_insert_with(|| raymarch_clouds::RaymarchClouds::new(device, queue, format))
+            self.underwater
+                .get_or_insert_with(|| underwater::Underwater::new(&self.device, format))
                 .draw(
-                    device,
-                    queue,
+                    &self.device,
+                    &self.queue,
                     &mut encoder,
                     color,
                     depth,
-                    &raymarch_clouds::Scene {
-                        input,
+                    &underwater::Scene {
                         view_proj: jittered,
-                        sun_angle: sky.sun_angle,
-                        fog_color: sky.fog_color,
-                        fog_end: sky.cloud_fog_end,
-                        tuning: self.raymarch_tuning,
+                        camera: frame.camera,
+                        time: (f64::from(frame.game_time).floor() + partial) / 20.0,
+                        sun_angle: frame.sky.sun_angle,
+                        water_fog: frame.water_fog,
+                        clarity: self.water_tuning.clarity,
+                        strength: self.water_tuning.underwater,
                     },
                 );
+        }
+        if raymarch
+            && !clouds_drawn
+            && let Some((color, depth)) = &scaled
+        {
+            draw_raymarch_clouds(
+                &self.device,
+                &self.queue,
+                self.config.format.remove_srgb_suffix(),
+                &mut self.raymarch_clouds,
+                &mut encoder,
+                color,
+                depth,
+                frame,
+                jittered,
+                self.raymarch_tuning,
+            );
         }
         if let Some((color, depth)) = &scaled
             && pack_post

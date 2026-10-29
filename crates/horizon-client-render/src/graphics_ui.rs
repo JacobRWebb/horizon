@@ -37,6 +37,21 @@ pub enum H {
     CloudAmbient,
     CloudSteps,
     CloudVariety,
+    NativeWater,
+    WaterClarity,
+    WaterDepthColor,
+    WaterWaveHeight,
+    WaterWaveSize,
+    WaterWaveSpeed,
+    WaterReflection,
+    WaterGlint,
+    WaterRefraction,
+    WaterFoam,
+    WaterFoamWidth,
+    WaterReflectionSteps,
+    WaterReflectionDistance,
+    WaterSelf,
+    WaterUnderwater,
     Fog,
     Weather,
     AnimatedTextures,
@@ -256,6 +271,81 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Ray-marched clouds: how much banks of cloud differ in height, in blocks.",
             ),
             h(
+                H::NativeWater,
+                Medium,
+                "Water with depth colour, waves, sky reflections, a sun glint, refraction and shore foam. Off is vanilla water.",
+            ),
+            h(
+                H::WaterClarity,
+                None,
+                "Native water: how many blocks deep until it turns dark.",
+            ),
+            h(
+                H::WaterDepthColor,
+                None,
+                "Native water: how dark and saturated deep water gets.",
+            ),
+            h(
+                H::WaterWaveHeight,
+                None,
+                "Native water: how steep the waves are.",
+            ),
+            h(
+                H::WaterWaveSize,
+                None,
+                "Native water: how long the waves are.",
+            ),
+            h(
+                H::WaterWaveSpeed,
+                None,
+                "Native water: how fast the waves move.",
+            ),
+            h(
+                H::WaterReflection,
+                None,
+                "Native water: how strongly it mirrors the sky.",
+            ),
+            h(
+                H::WaterGlint,
+                None,
+                "Native water: how bright the sun's glint is.",
+            ),
+            h(
+                H::WaterRefraction,
+                None,
+                "Native water: how much it bends what is underneath.",
+            ),
+            h(
+                H::WaterFoam,
+                None,
+                "Native water: how much foam gathers at the shore.",
+            ),
+            h(
+                H::WaterFoamWidth,
+                None,
+                "Native water: how far the foam reaches from the shore.",
+            ),
+            h(
+                H::WaterReflectionSteps,
+                Medium,
+                "Native water: samples along each reflected ray. More shows terrain, trees, mobs and clouds more cleanly; Off mirrors only the sky.",
+            ),
+            h(
+                H::WaterReflectionDistance,
+                None,
+                "Native water: how far reflections look, in blocks.",
+            ),
+            h(
+                H::WaterSelf,
+                Low,
+                "Native water: see yourself in the water, in first person too, wherever the water is near you.",
+            ),
+            h(
+                H::WaterUnderwater,
+                Medium,
+                "Native water: the view under the surface: depth colour, light shafts, caustics and the surface seen from below. 0 is vanilla.",
+            ),
+            h(
                 H::Fog,
                 None,
                 "Distance fog. Off shows the edge of the loaded world.",
@@ -405,6 +495,30 @@ fn extra_rows(level: Level, settings: &Settings) -> Vec<Row> {
             }))
         });
     }
+    if !settings.horizon.water_shader {
+        let tuning = [
+            H::WaterClarity,
+            H::WaterDepthColor,
+            H::WaterWaveHeight,
+            H::WaterWaveSize,
+            H::WaterWaveSpeed,
+            H::WaterReflection,
+            H::WaterGlint,
+            H::WaterRefraction,
+            H::WaterFoam,
+            H::WaterFoamWidth,
+            H::WaterReflectionSteps,
+            H::WaterReflectionDistance,
+            H::WaterSelf,
+            H::WaterUnderwater,
+        ];
+        rows.retain(|row| {
+            !matches!(row, Row::Setting(s) if tuning.contains(&match s.item {
+                Item::Horizon(h) => h,
+                _ => H::Preset,
+            }))
+        });
+    }
     // Drop headings whose settings were all on the parent screens.
     let mut has_setting = false;
     rows.reverse();
@@ -459,6 +573,19 @@ impl H {
             H::CloudAmbient => Some((g.cloud_ambient as f32 - 20.0) / 180.0),
             H::CloudSteps => Some((g.cloud_steps as f32 - 32.0) / 224.0),
             H::CloudVariety => Some(g.cloud_variety as f32 / 30.0),
+            H::WaterClarity => Some((g.water_clarity as f32 - 2.0) / 38.0),
+            H::WaterDepthColor => Some((g.water_depth_color as f32 - 20.0) / 180.0),
+            H::WaterWaveHeight => Some(g.water_wave_height as f32 / 300.0),
+            H::WaterWaveSize => Some((g.water_wave_size as f32 - 50.0) / 250.0),
+            H::WaterWaveSpeed => Some(g.water_wave_speed as f32 / 300.0),
+            H::WaterReflection => Some(g.water_reflection as f32 / 200.0),
+            H::WaterGlint => Some(g.water_glint as f32 / 300.0),
+            H::WaterRefraction => Some(g.water_refraction as f32 / 300.0),
+            H::WaterFoam => Some(g.water_foam as f32 / 150.0),
+            H::WaterFoamWidth => Some((g.water_foam_width as f32 - 2.0) / 58.0),
+            H::WaterReflectionSteps => Some(g.water_reflection_steps as f32 / 96.0),
+            H::WaterReflectionDistance => Some((g.water_reflection_distance as f32 - 16.0) / 112.0),
+            H::WaterUnderwater => Some(g.water_underwater as f32 / 200.0),
             _ => None,
         }
     }
@@ -539,6 +666,33 @@ impl H {
                 "Cloud Height Variety",
                 format!("{} blocks", g.cloud_variety),
             ),
+            H::NativeWater => labelled("Native Water", on_off(g.water_shader)),
+            H::WaterClarity => labelled("Water Clarity", format!("{} blocks", g.water_clarity)),
+            H::WaterDepthColor => labelled("Deep Water Color", format!("{}%", g.water_depth_color)),
+            H::WaterWaveHeight => labelled("Wave Height", format!("{}%", g.water_wave_height)),
+            H::WaterWaveSize => labelled("Wave Size", format!("{}%", g.water_wave_size)),
+            H::WaterWaveSpeed => labelled("Wave Speed", format!("{}%", g.water_wave_speed)),
+            H::WaterReflection => labelled("Water Reflections", format!("{}%", g.water_reflection)),
+            H::WaterGlint => labelled("Sun Glint", format!("{}%", g.water_glint)),
+            H::WaterRefraction => labelled("Water Refraction", format!("{}%", g.water_refraction)),
+            H::WaterFoam => labelled("Shore Foam", format!("{}%", g.water_foam)),
+            H::WaterFoamWidth => labelled(
+                "Foam Width",
+                format!("{:.1} blocks", g.water_foam_width as f32 / 10.0),
+            ),
+            H::WaterReflectionSteps => match g.water_reflection_steps {
+                0 => labelled("Reflection Quality", "Sky only".to_string()),
+                n => labelled("Reflection Quality", format!("{n} steps")),
+            },
+            H::WaterReflectionDistance => labelled(
+                "Reflection Distance",
+                format!("{} blocks", g.water_reflection_distance),
+            ),
+            H::WaterSelf => labelled("Self Reflection", on_off(g.water_self)),
+            H::WaterUnderwater => match g.water_underwater {
+                0 => labelled("Underwater Look", "Vanilla".to_string()),
+                n => labelled("Underwater Look", format!("{n}%")),
+            },
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             H::Overlay => labelled(
@@ -582,6 +736,21 @@ impl H {
             H::CloudAmbient => g.cloud_ambient = (20.0 + (v * 18.0).round() * 10.0) as u32,
             H::CloudSteps => g.cloud_steps = (32.0 + (v * 14.0).round() * 16.0) as u32,
             H::CloudVariety => g.cloud_variety = (v * 30.0).round() as u32,
+            H::WaterClarity => g.water_clarity = (2.0 + (v * 38.0).round()) as u32,
+            H::WaterDepthColor => g.water_depth_color = (20.0 + (v * 18.0).round() * 10.0) as u32,
+            H::WaterWaveHeight => g.water_wave_height = ((v * 30.0).round() * 10.0) as u32,
+            H::WaterWaveSize => g.water_wave_size = (50.0 + (v * 25.0).round() * 10.0) as u32,
+            H::WaterWaveSpeed => g.water_wave_speed = ((v * 30.0).round() * 10.0) as u32,
+            H::WaterReflection => g.water_reflection = ((v * 20.0).round() * 10.0) as u32,
+            H::WaterGlint => g.water_glint = ((v * 30.0).round() * 10.0) as u32,
+            H::WaterRefraction => g.water_refraction = ((v * 30.0).round() * 10.0) as u32,
+            H::WaterFoam => g.water_foam = ((v * 15.0).round() * 10.0) as u32,
+            H::WaterFoamWidth => g.water_foam_width = (2.0 + (v * 29.0).round() * 2.0) as u32,
+            H::WaterReflectionSteps => g.water_reflection_steps = ((v * 12.0).round() * 8.0) as u32,
+            H::WaterReflectionDistance => {
+                g.water_reflection_distance = (16.0 + (v * 14.0).round() * 8.0) as u32
+            }
+            H::WaterUnderwater => g.water_underwater = ((v * 20.0).round() * 10.0) as u32,
             _ => {}
         }
     }
@@ -609,6 +778,8 @@ impl H {
             H::EntityCulling => g.entity_culling = !g.entity_culling,
             H::Sky => g.sky = !g.sky,
             H::RaymarchedClouds => g.cloud_raymarch = !g.cloud_raymarch,
+            H::NativeWater => g.water_shader = !g.water_shader,
+            H::WaterSelf => g.water_self = !g.water_self,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
@@ -685,6 +856,8 @@ impl Item {
             Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::RaymarchedClouds) => g.cloud_raymarch,
+            Item::Horizon(H::NativeWater) => g.water_shader,
+            Item::Horizon(H::WaterSelf) => g.water_self,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,

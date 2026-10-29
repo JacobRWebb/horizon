@@ -335,8 +335,9 @@ impl Post {
                     view_formats: &[],
                 })
             };
-            let sampled =
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC;
             let color = make_tex("Scaled world", size, self.format, sampled)
                 .create_view(&Default::default());
             // TEXTURE_BINDING: occlusion culling and TAA read it.

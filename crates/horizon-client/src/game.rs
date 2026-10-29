@@ -1578,6 +1578,9 @@ struct Game<'a> {
     luminance: Option<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
+    /// The block the player stood in, the tick, and the water surface found near it (native
+    /// water's mirror, game/perspective.rs).
+    water_plane_cache: std::cell::Cell<Option<([i32; 3], u64, Option<f64>)>>,
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
@@ -12239,6 +12242,12 @@ impl Game<'_> {
                 self.entity_geometry(camera, alpha, entities)
             });
         }
+        // Native water mirrors the player's own model, which first person does not draw.
+        let (own_body, own_body_plane) = if title {
+            (Vec::new(), None)
+        } else {
+            self.own_body_for_water(camera, self.clock.camera_fraction())
+        };
         let bolts = if title {
             Vec::new()
         } else {
@@ -12377,6 +12386,8 @@ impl Game<'_> {
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
+            own_body: &own_body,
+            own_body_plane,
             lightning: horizon_client::gfx::lightning::Input {
                 bolts: &bolts,
                 uv: horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white()),
@@ -14333,6 +14344,7 @@ impl<'a> Game<'a> {
             dynamic_lights: Vec::new(),
             luminance: None,
             see_through_vertices: Vec::new(),
+            water_plane_cache: Default::default(),
             entity_spans: Default::default(),
             glowing_vertices: Default::default(),
             pack_ids: None,
@@ -15373,6 +15385,8 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
+        own_body: &[],
+        own_body_plane: None,
         clouds: None,
         lightning: Default::default(),
         additive: &[],

@@ -4,7 +4,7 @@
 //! and in the inventory (`InventoryScreen.extractEntityInInventoryFollowsMouse`).
 use super::{Game, Screen};
 use horizon_client::{
-    blocks::BlockFacts,
+    blocks::{BlockFacts, Fluid},
     camera::{CameraEntity, LivingCamera},
     collisions::SceneCollisions,
 };
@@ -471,16 +471,19 @@ impl Game<'_> {
     pub(super) fn own_body_in_view(&self) -> bool {
         !self.camera_type.first_person() || self.sleeping.is_some()
     }
-    /// Whether the player's own model shows in the world view (its body or,
-    /// while invisible, only its armour and held items).
-    pub(super) fn player_model_shown(&self) -> bool {
-        // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (self.own_body_in_view() || self.pack_shadow_casters.1)
-            && !self.spectator()
+    /// Whether the player has a model to draw at all: not a spectator or dead.
+    fn player_model_exists(&self) -> bool {
+        !self.spectator()
             && self
                 .player
                 .as_ref()
                 .is_some_and(|p| !p.health.dead_or_dying())
+    }
+    /// Whether the player's own model shows in the world view (its body or,
+    /// while invisible, only its armour and held items).
+    pub(super) fn player_model_shown(&self) -> bool {
+        // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
+        (self.own_body_in_view() || self.pack_shadow_casters.1) && self.player_model_exists()
     }
     /// The player's own team: a server's client is in it by its profile name.
     fn own_team(&self) -> Option<&horizon_client::scoreboard::Team> {
@@ -493,6 +496,68 @@ impl Game<'_> {
     pub(super) fn own_body_visible(&self) -> bool {
         body_visible(&self.potions.effects, self.own_team())
     }
+    /// The height of the water surface nearest the player, for native water's mirror: the first
+    /// water found in rings around them, from just above their head down eight blocks. Looked
+    /// up again when they move to another block, or every second.
+    fn water_plane(&self, position: [f64; 3]) -> Option<f64> {
+        let at = position.map(|v| v.floor() as i32);
+        if let Some((key, tick, plane)) = self.water_plane_cache.get()
+            && key == at
+            && self.ticks.saturating_sub(tick) < 20
+        {
+            return plane;
+        }
+        let surface = |x: i32, y: i32, z: i32| {
+            let f = self.res.facts().get(self.world.block(x, y, z));
+            if f.fluid != Fluid::Water {
+                return None;
+            }
+            let above = self.res.facts().get(self.world.block(x, y + 1, z));
+            (above.fluid != Fluid::Water).then(|| f64::from(y) + f64::from(f.fluid_level) / 9.0)
+        };
+        let mut found = None;
+        'rings: for r in 0..=8i32 {
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    if dx.abs().max(dz.abs()) != r {
+                        continue;
+                    }
+                    for y in (at[1] - 8..=at[1] + 2).rev() {
+                        if let Some(plane) = surface(at[0] + dx, y, at[2] + dz) {
+                            found = Some(plane);
+                            break 'rings;
+                        }
+                    }
+                }
+            }
+        }
+        self.water_plane_cache.set(Some((at, self.ticks, found)));
+        found
+    }
+    /// The player's model for native water's mirror, in first person too, and the height of the
+    /// water it is mirrored in: nothing while no water is near.
+    pub(super) fn own_body_for_water(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+    ) -> (Vec<horizon_client::mesher::Vertex>, Option<f64>) {
+        let mut out = Vec::new();
+        if !self.settings.horizon.water_shader
+            || !self.settings.horizon.water_self
+            || !self.player_model_exists()
+            || !self.own_body_visible()
+        {
+            return (out, None);
+        }
+        let Some(m) = self.player_model.as_ref() else {
+            return (out, None);
+        };
+        let Some(plane) = self.water_plane([m.position.x, m.position.y, m.position.z]) else {
+            return (out, None);
+        };
+        self.player_model_vertices(camera, alpha, &mut out);
+        (out, Some(plane))
+    }
     /// The player's model for the entity pass in third person.
     pub(super) fn player_model_geometry(
         &self,
@@ -503,6 +568,15 @@ impl Game<'_> {
         if !self.player_model_shown() {
             return;
         }
+        self.player_model_vertices(camera, alpha, out);
+    }
+    /// The player's model, shown or not.
+    fn player_model_vertices(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
