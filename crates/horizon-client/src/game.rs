@@ -62,6 +62,7 @@ mod explosion;
 mod extras;
 mod falling_damage;
 mod fangs;
+mod fires;
 mod fireworks;
 mod fishing;
 mod fov;
@@ -1575,6 +1576,10 @@ struct Game<'a> {
     /// Horizon Extras' dynamic lights this frame (`dynamic_lights.rs`), and how brightly each
     /// item glows (built the first time the extra is on).
     dynamic_lights: Vec<[f32; 4]>,
+    /// The fire blocks near the camera (`fires.rs`): corner, and 1 for fire, 2 for soul fire.
+    fires: Vec<[f64; 4]>,
+    /// Where and when `fires` was last gathered.
+    fire_scan: Option<([i32; 3], u64)>,
     luminance: Option<horizon_client::dynamic_light::Luminance>,
     /// Name tags drawn over everything (`RenderPipelines.TEXT_SEE_THROUGH`).
     see_through_vertices: Vec<Vertex>,
@@ -12307,6 +12312,11 @@ impl Game<'_> {
         } else {
             self.gather_dynamic_lights(camera, alpha);
         }
+        let fires = if title {
+            Vec::new()
+        } else {
+            self.gather_fires(camera)
+        };
         let pack_inputs = if title {
             Default::default()
         } else {
@@ -12386,6 +12396,7 @@ impl Game<'_> {
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
+            fires: &fires,
             own_body: &own_body,
             own_body_plane,
             lightning: horizon_client::gfx::lightning::Input {
@@ -14342,6 +14353,8 @@ impl<'a> Game<'a> {
             renderer: None,
             entity_vertices: Vec::new(),
             dynamic_lights: Vec::new(),
+            fires: Vec::new(),
+            fire_scan: None,
             luminance: None,
             see_through_vertices: Vec::new(),
             water_plane_cache: Default::default(),
@@ -15385,6 +15398,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
+        fires: &[],
         own_body: &[],
         own_body_plane: None,
         clouds: None,

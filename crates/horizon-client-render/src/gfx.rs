@@ -27,6 +27,9 @@ const CRUMBLING_BLEND: wgpu::BlendState = wgpu::BlendState {
 const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
     wgpu::vertex_attr_array![0=>Float32x3,1=>Uint16x2,2=>Uint16,4=>Uint8x2,3=>Unorm8x4];
 
+/// How far from the camera fire is a ray-marched volume, in blocks (`game/fires.rs` finds them).
+pub const FIRE_VOLUME_RADIUS: f32 = 14.0;
+
 /// The ray-marched clouds' pass over the world target `color`, up to `depth`.
 #[allow(clippy::too_many_arguments)]
 fn draw_raymarch_clouds(
@@ -341,6 +344,9 @@ pub struct Frame<'a> {
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
+    /// The fire blocks near the camera as the atmosphere pass marches them: camera-relative
+    /// corner, and 1 for fire, 2 for soul fire (empty unless the portal, lava and fire look is on).
+    pub fires: &'a [[f32; 4]],
     /// The player's own model, camera-relative, for native water to mirror (first person draws
     /// none of it in the world), and the height of the water it is mirrored in.
     pub own_body: &'a [Vertex],
@@ -3906,7 +3912,9 @@ impl Renderer {
             && !frame.underwater
             && frame.clouds.as_ref().is_some_and(|c| !c.fast);
         // The air as a volume: also reads the depth.
+        let fire_volumes = taa && !frame.underwater && !frame.title && !frame.fires.is_empty();
         let atmosphere = self.atmosphere_on && taa && !frame.underwater && !frame.title;
+        let atmosphere_pass = atmosphere || fire_volumes;
         // Native water reads a copy of the frame and its depth from before translucent terrain.
         let water = self.water_on && taa && (!frame.underwater || self.water_tuning.underwater > 0);
         // Native water's underwater look: the frame dimmed and lit by the water's own pass.
@@ -4018,7 +4026,12 @@ impl Renderer {
                 self.special_layers[0] as f32,
                 self.special_layers[1] as f32,
                 self.special_layers[2] as f32,
-                0.0,
+                // Fire close enough to be a volume is not drawn as flat flames as well.
+                if fire_volumes {
+                    FIRE_VOLUME_RADIUS
+                } else {
+                    0.0
+                },
             ],
             special_b: [
                 self.special_layers[3] as f32,
@@ -4805,8 +4818,11 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth =
-            pack_reads_world || raymarch || atmosphere || water || (taa && self.world_post.taa);
+        let keep_depth = pack_reads_world
+            || raymarch
+            || atmosphere_pass
+            || water
+            || (taa && self.world_post.taa);
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -4850,7 +4866,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world || raymarch || atmosphere || water,
+            pack_reads_world || raymarch || atmosphere_pass || water,
         );
         if water && scaled.is_some() && self.water.is_none() {
             let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
@@ -5485,7 +5501,7 @@ impl Renderer {
                 self.raymarch_tuning,
             );
         }
-        if atmosphere && let Some((color, depth)) = &scaled {
+        if atmosphere_pass && let Some((color, depth)) = &scaled {
             let format = self.config.format.remove_srgb_suffix();
             let (device, queue) = (&self.device, &self.queue);
             let noise = self
@@ -5516,6 +5532,8 @@ impl Renderer {
                             atmosphere::Dimension::Overworld
                         },
                         tuning: self.atmosphere_tuning,
+                        air: atmosphere,
+                        fires: if fire_volumes { frame.fires } else { &[] },
                     },
                 );
         }

@@ -8,6 +8,9 @@ use glam::{DVec3, Mat4, Vec3, Vec4};
 /// the tiling noise at, so the noise does not jump and `f32` keeps its precision far out.
 const WRAP: f64 = 12000.0;
 
+/// The most fire blocks the pass marches.
+pub const MAX_FIRES: usize = 48;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dimension {
     Overworld,
@@ -24,6 +27,8 @@ struct Params {
     cam: [f32; 4],
     fog: [f32; 4],
     misc: [f32; 4],
+    extra: [f32; 4],
+    fires: [[f32; 4]; MAX_FIRES],
 }
 
 /// The player's settings for the look of the air (`graphics::Graphics`).
@@ -45,7 +50,7 @@ impl Default for Tuning {
 }
 
 /// What a frame gives the pass.
-pub struct Scene {
+pub struct Scene<'a> {
     /// The world's projection (with the TAA jitter) and view.
     pub view_proj: Mat4,
     pub camera: DVec3,
@@ -58,6 +63,10 @@ pub struct Scene {
     pub distance: f32,
     pub dimension: Dimension,
     pub tuning: Tuning,
+    /// Whether the air is drawn: otherwise only the fires are.
+    pub air: bool,
+    /// The fire blocks: camera-relative corner, and 1 for fire, 2 for soul fire.
+    pub fires: &'a [[f32; 4]],
 }
 
 pub struct Atmosphere {
@@ -193,7 +202,7 @@ impl Atmosphere {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         depth: &wgpu::TextureView,
-        scene: &Scene,
+        scene: &Scene<'_>,
     ) {
         self.frame = self.frame.wrapping_add(1);
         let angle = scene.sun_angle.to_radians();
@@ -208,6 +217,7 @@ impl Atmosphere {
         };
         let daylight = ((sun.y + 0.05) / 0.25).clamp(0.0, 1.0);
         let mode = match scene.dimension {
+            _ if !scene.air => 3.0,
             Dimension::Overworld => 0.0,
             Dimension::Nether => 1.0,
             Dimension::End => 2.0,
@@ -240,6 +250,14 @@ impl Atmosphere {
                 (self.frame % 64) as f32,
                 scene.distance.clamp(64.0, 512.0),
             ],
+            extra: [scene.fires.len().min(MAX_FIRES) as f32, 0.0, 0.0, 0.0],
+            fires: {
+                let mut fires = [[0.0; 4]; MAX_FIRES];
+                for (to, from) in fires.iter_mut().zip(scene.fires) {
+                    *to = *from;
+                }
+                fires
+            },
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&params));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {

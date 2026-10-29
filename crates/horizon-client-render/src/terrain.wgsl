@@ -190,28 +190,32 @@ fn lava_surface(rel: vec3<f32>, flowing: bool) -> vec3<f32> {
         fbm3(world * 0.5 + drift + vec3(17.0, 0.0, t * 0.02)),
         fbm3(world * 0.5 + drift + vec3(5.0, 11.0, 0.0)),
     );
-    var heat = 0.0;
+    var crack = 0.0;
+    var halo = 0.0;
     var crust = 0.0;
     let p = world + (warp - 0.4) * 3.0;
     for (var i = 0; i < 4; i++) {
         let deep = f32(i);
-        let q = p + dir * (deep * 0.14);
-        let n = fbm3(q * 1.0 + drift * 2.0);
-        // Ridged noise: the cracks are where it crosses the middle.
-        let ridge = 1.0 - abs(2.0 * n - 0.9);
-        heat += pow(clamp(ridge, 0.0, 1.0), 5.0) * (1.0 - deep * 0.2);
+        // Looking in at an angle sees the cracks shift: deeper samples are offset along the view.
+        let q = p + dir * (deep * 0.18);
+        let n = fbm3(q + drift * 2.0);
+        // The cracks run where the noise crosses its middle; they widen a little with depth.
+        let d = abs(n - 0.5);
+        crack += smoothstep(0.045 + deep * 0.01, 0.0, d) * (1.0 - deep * 0.18);
+        halo += smoothstep(0.2, 0.0, d);
         if i == 0 {
             crust = fbm3(q * 2.0 + vec3(0.0, t * 0.05, 0.0));
         }
     }
-    heat = clamp(heat * 1.4, 0.0, 1.4);
-    let pulse = 0.88 + 0.12 * sin(t * 1.6 + warp.x * 9.0);
-    let dark = vec3(0.07, 0.012, 0.006) + crust * vec3(0.16, 0.035, 0.012);
-    let ember = mix(vec3(0.55, 0.05, 0.0), vec3(1.0, 0.36, 0.03), smoothstep(0.0, 0.7, heat));
-    let hot = mix(ember, vec3(1.0, 0.86, 0.4), smoothstep(0.7, 1.3, heat));
-    let glow = smoothstep(0.05, 0.9, heat);
-    // Even the crust glows a little, as if lit from below.
-    return mix(dark, hot * pulse * 1.25, glow) + vec3(0.12, 0.02, 0.0) * (1.0 - crust);
+    crack = clamp(crack * 0.5, 0.0, 1.0);
+    halo = clamp(halo * 0.25, 0.0, 1.0);
+    let pulse = 0.85 + 0.15 * sin(t * 1.4 + warp.x * 9.0 + crust * 6.0);
+    // Cooled crust, near black and reddish, with plates of lighter rock.
+    let rock = vec3(0.075, 0.02, 0.012) + crust * vec3(0.12, 0.03, 0.012);
+    // The glow bleeds out of the cracks into the crust beside them.
+    let ember = vec3(0.7, 0.1, 0.01) * pow(halo, 2.0);
+    let fire = mix(vec3(1.0, 0.32, 0.02), vec3(1.0, 0.72, 0.2), crack);
+    return (rock + ember * pulse) + fire * crack * pulse * 1.15;
 }
 // The Nether portal as a volume of gas: marched a block and a half behind the face, ribbons of
 // violet and magenta churning and swaying, with pale cores where the gas is thickest.
@@ -305,6 +309,8 @@ fn fire_flame(rel: vec3<f32>, uv: vec2<f32>, soul: bool) -> vec4<f32> {
     }
     let fire_layer = vec4<u32>(globals.special_b);
     if any(vec4<u32>(own_layer) == fire_layer) {
+        // Near the camera the flames are a volume (gfx/atmosphere.wgsl).
+        if length(in.rel) < globals.special.w { discard; }
         let soul = own_layer == fire_layer.z || own_layer == fire_layer.w;
         let flame = fire_flame(in.rel, in.uv, soul);
         let dither = fract(52.9829189 * fract(dot(in.clip.xy + globals.camera.w * 61.0,

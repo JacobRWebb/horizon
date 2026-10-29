@@ -16,6 +16,10 @@ struct Params {
     fog: vec4<f32>,
     // x: 0 Overworld, 1 Nether, 2 End; y: most steps; z: the frame count; w: the longest ray.
     misc: vec4<f32>,
+    // x: how many fires there are.
+    extra: vec4<f32>,
+    // The fire blocks near the camera: camera-relative corner, w 1 for fire and 2 for soul fire.
+    fires: array<vec4<f32>, 48>,
 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var depth_tex: texture_depth_2d;
@@ -24,6 +28,7 @@ struct Params {
 @group(0) @binding(3) var samp: sampler;
 
 const MAX_STEPS: i32 = 64;
+const MAX_FIRES: i32 = 48;
 
 struct PostOut {
     @builtin(position) clip: vec4<f32>,
@@ -197,6 +202,139 @@ fn void_sea(ro: vec3<f32>, rd: vec3<f32>, mode: i32, time: f32, jitter: f32) -> 
     return vec4(color, 1.0);
 }
 
+// Fire: each fire block near the camera is a volume of flame with a plume of smoke over it,
+// marched as the ray crosses their boxes. `p.fires` holds the blocks' camera-relative corners.
+fn ray_box(o: vec3<f32>, d: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec2<f32> {
+    let inv = 1.0 / select(d, vec3(1.0e-6), abs(d) < vec3(1.0e-6));
+    let a = (lo - o) * inv;
+    let b = (hi - o) * inv;
+    let near = min(a, b);
+    let far = max(a, b);
+    return vec2(max(max(near.x, near.y), near.z), min(min(far.x, far.y), far.z));
+}
+
+// A flame's colour by how hot it burns: dark red at the tips, orange, yellow, and a pale core.
+fn flame_color(heat: f32, soul: bool) -> vec3<f32> {
+    if soul {
+        var c = mix(vec3(0.02, 0.1, 0.4), vec3(0.08, 0.5, 1.0), smoothstep(0.0, 0.55, heat));
+        return mix(c, vec3(0.7, 1.0, 1.0), smoothstep(0.85, 1.25, heat));
+    }
+    var c = mix(vec3(0.45, 0.03, 0.0), vec3(1.0, 0.3, 0.02), smoothstep(0.0, 0.45, heat));
+    c = mix(c, vec3(1.0, 0.72, 0.14), smoothstep(0.4, 0.9, heat));
+    return mix(c, vec3(1.0, 0.92, 0.65), smoothstep(0.95, 1.3, heat));
+}
+
+fn flame_volume(o: vec3<f32>, rd: vec3<f32>, t_a: f32, t_b: f32, seed: vec3<f32>, soul: bool,
+    jitter: f32, light: ptr<function, vec3<f32>>, trans: ptr<function, f32>) {
+    let time = p.cam.w;
+    let n = 14;
+    let dt = (t_b - t_a) / f32(n);
+    var t = t_a + dt * jitter;
+    for (var i = 0; i < n; i++) {
+        let l = o + rd * t;
+        let y = max(l.y, 0.0);
+        let c = l.xz - 0.5;
+        let s = seed + l;
+        // The flame sways as it rises.
+        let sway = vec3(sin(time * 2.9 + y * 3.7 + s.z * 5.0), 0.0, sin(time * 2.3 + y * 3.1 + s.x * 5.0))
+            * (0.07 * y);
+        let q = s + sway;
+        // Tongues: noise stretched up and sliding up, a finer layer racing faster.
+        let n1 = noise_at(vec3(q.x * 2.0, q.y * 0.7 - time * 2.2, q.z * 2.0), 6.0).r;
+        let n2 = noise_at(vec3(q.x * 4.5 + 7.0, q.y * 1.6 - time * 4.5, q.z * 4.5), 6.0).r;
+        let shape = n1 * 0.6 + n2 * 0.4;
+        let d = shape * 1.55 - 0.32 - y * 0.85 - dot(c, c) * 2.3
+            + 0.3 * (1.0 - smoothstep(0.0, 0.5, y));
+        if d > 0.0 {
+            let heat = clamp(d * 1.25 + (1.0 - y / 1.7) * 0.3, 0.0, 1.2);
+            let sigma = d * 15.0;
+            let a = 1.0 - exp(-sigma * dt);
+            *light += *trans * flame_color(heat, soul) * a * 1.35;
+            *trans *= exp(-sigma * dt * 0.3);
+        }
+        t += dt;
+    }
+}
+
+fn smoke_volume(o: vec3<f32>, rd: vec3<f32>, t_a: f32, t_b: f32, seed: vec3<f32>, soul: bool,
+    jitter: f32, light: ptr<function, vec3<f32>>, trans: ptr<function, f32>) {
+    let time = p.cam.w;
+    let n = 12;
+    let dt = (t_b - t_a) / f32(n);
+    var t = t_a + dt * jitter;
+    for (var i = 0; i < n; i++) {
+        let l = o + rd * t;
+        let y = l.y - 0.9;
+        if y > 0.0 {
+            let s = seed + l;
+            // The plume leans downwind and widens as it climbs.
+            let lean = vec2(0.3, 0.12) * y;
+            let off = l.xz - 0.5 - lean;
+            let radius = 0.32 + 0.24 * y;
+            let env = 1.0 - smoothstep(0.0, radius, length(off));
+            let n1 = noise_at(vec3(s.x * 1.2, s.y * 0.8 - time * 1.0, s.z * 1.2), 6.0).r;
+            let n2 = noise_at(vec3(s.x * 2.6 + 3.0, s.y * 1.8 - time * 1.9, s.z * 2.6), 6.0).r;
+            let n3 = n1 * 0.6 + n2 * 0.4;
+            let d = smoothstep(0.38, 0.76, n3) * env * smoothstep(0.0, 0.7, y)
+                * (1.0 - smoothstep(2.8, 5.0, y));
+            if d > 0.001 {
+                let sigma = d * 2.6;
+                let step_trans = exp(-sigma * dt);
+                // Black soot, lit orange from below by the fire and faintly by the sky.
+                var smoke = vec3(0.05, 0.045, 0.045) + p.fog.rgb * 0.05;
+                var glow = vec3(1.0, 0.34, 0.06);
+                if soul {
+                    smoke = vec3(0.03, 0.05, 0.07) + p.fog.rgb * 0.04;
+                    glow = vec3(0.08, 0.45, 0.9);
+                }
+                smoke += glow * exp(-y * 0.9) * 0.4;
+                *light += *trans * (1.0 - step_trans) * smoke;
+                *trans *= step_trans;
+            }
+        }
+        t += dt;
+    }
+}
+
+fn fires(ro: vec3<f32>, rd: vec3<f32>, t_scene: f32, jitter: f32,
+    light: ptr<function, vec3<f32>>, trans: ptr<function, f32>) {
+    let count = i32(p.extra.x);
+    for (var i = 0; i < MAX_FIRES; i++) {
+        if i >= count {
+            break;
+        }
+        let f = p.fires[i];
+        let o = ro - f.xyz;
+        let soul = f.w > 1.5;
+        let seed = p.cam.xyz + f.xyz;
+        let flame = ray_box(o, rd, vec3(-0.05, 0.0, -0.05), vec3(1.05, 1.7, 1.05));
+        let smoke = ray_box(o, rd, vec3(-1.6, 0.9, -1.6), vec3(2.6, 5.2, 2.6));
+        let fa = max(flame.x, 0.0);
+        let fb = min(flame.y, t_scene);
+        let sa = max(smoke.x, 0.0);
+        let sb = min(smoke.y, t_scene);
+        let has_flame = fb > fa;
+        let has_smoke = sb > sa;
+        // Whichever the ray reaches first goes first.
+        if has_smoke && (!has_flame || sa < fa) {
+            smoke_volume(o, rd, sa, sb, seed, soul, jitter, light, trans);
+            if has_flame {
+                flame_volume(o, rd, fa, fb, seed, soul, jitter, light, trans);
+            }
+        } else {
+            if has_flame {
+                flame_volume(o, rd, fa, fb, seed, soul, jitter, light, trans);
+            }
+            if has_smoke {
+                smoke_volume(o, rd, sa, sb, seed, soul, jitter, light, trans);
+            }
+        }
+        if *trans < 0.02 {
+            break;
+        }
+    }
+}
+
 @fragment fn fs_atmosphere(in: PostOut) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(depth_tex));
     let uv = in.clip.xy / size;
@@ -220,7 +358,8 @@ fn void_sea(ro: vec3<f32>, rd: vec3<f32>, mode: i32, time: f32, jitter: f32) -> 
     let jitter = gradient_noise(in.clip.xy + p.misc.z * 5.588238);
 
     var t0 = 0.0;
-    var t1 = min(t_scene, p.misc.w);
+    // Mode 3 is no air at all: only the fires.
+    var t1 = select(min(t_scene, p.misc.w), 0.0, mode == 3);
     if mode == 2 && sky {
         // The nebula hangs in a shell far out in the void.
         t0 = 120.0;
@@ -230,7 +369,7 @@ fn void_sea(ro: vec3<f32>, rd: vec3<f32>, mode: i32, time: f32, jitter: f32) -> 
     var trans = 1.0;
     // Below the world, where nothing was drawn, lies the void's sea.
     var behind = vec4(0.0);
-    if sky && mode != 1 {
+    if sky && (mode == 0 || mode == 2) {
         behind = void_sea(origin, rd, mode, time, jitter);
     }
     if t1 > t0 {
@@ -320,6 +459,7 @@ fn void_sea(ro: vec3<f32>, rd: vec3<f32>, mode: i32, time: f32, jitter: f32) -> 
             t += dt;
         }
     }
+    fires(ro, rd, t_scene, jitter, &light, &trans);
     light += trans * behind.rgb;
     trans *= 1.0 - behind.a;
     if mode == 0 {

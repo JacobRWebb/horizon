@@ -997,6 +997,9 @@ pub struct ParticleEngine {
     emitters: Vec<(ParticleOptions, [f64; 3], f64, f64, u32)>,
     /// Camera position for the 32-block spawn limiter.
     pub camera: [f64; 3],
+    /// Fire blocks drawn as ray-marched flames and smoke: the smoke particles over them are not
+    /// drawn. (Their corners, in blocks.)
+    pub hidden_smoke: Vec<[f64; 3]>,
     /// The Particles option (`ParticleStatus`): 0 all, 1 decreased, 2 minimal.
     pub particle_level: u8,
     /// FireworkParticles.Starter instances.
@@ -1029,6 +1032,7 @@ impl ParticleEngine {
             emitters: Vec::new(),
             starters: Vec::new(),
             camera: [0.0; 3],
+            hidden_smoke: Vec::new(),
             particle_level: 0,
             sounds: Vec::new(),
             made: Default::default(),
@@ -3690,6 +3694,15 @@ impl ParticleEngine {
             * Quat::from_rotation_x(-pitch.to_radians());
         for p in &self.particles {
             if p.no_render {
+                continue;
+            }
+            if matches!(p.ty, ParticleType::LargeSmoke | ParticleType::Smoke)
+                && self.hidden_smoke.iter().any(|f| {
+                    (p.position[0] - f[0] - 0.5).abs() < 1.6
+                        && (p.position[2] - f[2] - 0.5).abs() < 1.6
+                        && (p.position[1] - f[1]).abs() < 6.0
+                })
+            {
                 continue;
             }
             // SparkParticle.extract: twinkling sparks blink after a third of their life.
