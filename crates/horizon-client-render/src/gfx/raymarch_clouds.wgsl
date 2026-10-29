@@ -159,16 +159,19 @@ fn forward_phase(c: f32) -> f32 {
     let shadow_color = vec3(0.60, 0.68, 0.82);
     let sky_color = vec3(0.86, 0.91, 1.0);
     let origin = vec3(p.origin.x, p.origin.y, p.origin.z) + ro;
-    let jitter = gradient_noise(in.clip.xy + p.misc.w * 5.588238);
-    var t = t0 + jitter * clamp(t0 * 0.01, 1.0, 16.0);
+    // Never let the step budget run out before the ray leaves the slab: a thicker slab at a
+    // low angle is a longer path, and cutting its far end would drop the distant clouds.
     let max_steps = i32(p.misc.z);
+    let min_dt = (t1 - t0) / (f32(max_steps) * 0.85);
+    let jitter = gradient_noise(in.clip.xy + p.misc.w * 5.588238);
+    var t = t0 + jitter * max(clamp(t0 * 0.01, 1.0, 16.0), min_dt);
     var trans = 1.0;
     var light = vec3(0.0);
     for (var i = 0; i < MAX_STEPS; i++) {
         if t >= t1 || i >= max_steps {
             break;
         }
-        let dt = clamp(t * 0.01, 1.0, 16.0);
+        let dt = max(clamp(t * 0.01, 1.0, 16.0), min_dt);
         let pos = origin + rd * t;
         let d = density(pos, true);
         if d > 0.004 {
