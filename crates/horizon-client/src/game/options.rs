@@ -306,6 +306,13 @@ impl Game<'_> {
                     variety: s.horizon.cloud_variety,
                 },
             );
+            r.set_atmosphere(
+                s.horizon.atmosphere,
+                horizon_client::gfx::atmosphere::Tuning {
+                    density: s.horizon.atmosphere_density,
+                    shafts: s.horizon.atmosphere_shafts,
+                },
+            );
             let layer = |name: &str| {
                 self.pack
                     .render

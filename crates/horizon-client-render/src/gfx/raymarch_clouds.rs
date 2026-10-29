@@ -79,8 +79,42 @@ pub struct RaymarchClouds {
     frame: u32,
 }
 
+/// The 3D noise the clouds and the atmosphere march through (`noise_texels`).
+pub fn noise_view(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let extent = wgpu::Extent3d {
+        width: NOISE_SIZE,
+        height: NOISE_SIZE,
+        depth_or_array_layers: NOISE_SIZE,
+    };
+    let noise = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Cloud noise"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        noise.as_image_copy(),
+        &noise_texels(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(NOISE_SIZE * 4),
+            rows_per_image: Some(NOISE_SIZE),
+        },
+        extent,
+    );
+    noise.create_view(&Default::default())
+}
+
 impl RaymarchClouds {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        noise: wgpu::TextureView,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Ray-marched clouds"),
             source: wgpu::ShaderSource::Wgsl(include_str!("raymarch_clouds.wgsl").into()),
@@ -185,37 +219,12 @@ impl RaymarchClouds {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let extent = wgpu::Extent3d {
-            width: NOISE_SIZE,
-            height: NOISE_SIZE,
-            depth_or_array_layers: NOISE_SIZE,
-        };
-        let noise = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Cloud noise"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            noise.as_image_copy(),
-            &noise_texels(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(NOISE_SIZE * 4),
-                rows_per_image: Some(NOISE_SIZE),
-            },
-            extent,
-        );
         Self {
             pipeline,
             layout,
             uniform,
             sampler,
-            noise: noise.create_view(&Default::default()),
+            noise,
             coverage: None,
             frame: 0,
         }

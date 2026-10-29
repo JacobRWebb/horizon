@@ -34,6 +34,7 @@ fn draw_raymarch_clouds(
     queue: &wgpu::Queue,
     format: wgpu::TextureFormat,
     slot: &mut Option<raymarch_clouds::RaymarchClouds>,
+    noise: &mut Option<wgpu::TextureView>,
     encoder: &mut wgpu::CommandEncoder,
     color: &wgpu::TextureView,
     depth: &wgpu::TextureView,
@@ -45,7 +46,8 @@ fn draw_raymarch_clouds(
         return;
     };
     let sky = &frame.sky;
-    slot.get_or_insert_with(|| raymarch_clouds::RaymarchClouds::new(device, queue, format))
+    let noise = noise.get_or_insert_with(|| raymarch_clouds::noise_view(device, queue));
+    slot.get_or_insert_with(|| raymarch_clouds::RaymarchClouds::new(device, format, noise.clone()))
         .draw(
             device,
             queue,
@@ -106,6 +108,7 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
 
 mod animate;
 mod arena;
+pub mod atmosphere;
 pub mod compositor;
 mod cull;
 mod end_sky;
@@ -130,8 +133,8 @@ pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
 pub mod panorama;
-mod readback;
 pub mod raymarch_clouds;
+mod readback;
 mod resident;
 mod stars;
 mod sunrise_fan;
@@ -604,6 +607,12 @@ pub struct Renderer {
     raymarch_clouds_on: bool,
     raymarch_tuning: raymarch_clouds::Tuning,
     raymarch_clouds: Option<raymarch_clouds::RaymarchClouds>,
+    /// The 3D noise the clouds and the atmosphere share, built when first needed.
+    raymarch_noise: Option<wgpu::TextureView>,
+    /// Ray-marched atmosphere (Horizon setting), built when first drawn.
+    atmosphere_on: bool,
+    atmosphere_tuning: atmosphere::Tuning,
+    atmosphere: Option<atmosphere::Atmosphere>,
     /// Native water (Horizon setting), built when first drawn.
     water_on: bool,
     water_tuning: water::Tuning,
@@ -2799,6 +2808,10 @@ impl Renderer {
             raymarch_clouds_on: false,
             raymarch_tuning: Default::default(),
             raymarch_clouds: None,
+            raymarch_noise: None,
+            atmosphere_on: false,
+            atmosphere_tuning: Default::default(),
+            atmosphere: None,
             water_on: false,
             water_tuning: Default::default(),
             water_layers: [u32::MAX; 2],
@@ -3466,6 +3479,11 @@ impl Renderer {
         self.raymarch_clouds_on = on;
         self.raymarch_tuning = tuning;
     }
+    /// Draws the air as a ray-marched volume (`atmosphere`).
+    pub fn set_atmosphere(&mut self, on: bool, tuning: atmosphere::Tuning) {
+        self.atmosphere_on = on;
+        self.atmosphere_tuning = tuning;
+    }
     /// Draws the surface of water with `water`'s look; `layers` are the sprite layers of
     /// `water_still` and `water_flow`.
     pub fn set_native_water(&mut self, on: bool, tuning: water::Tuning, layers: [u32; 2]) {
@@ -3870,6 +3888,8 @@ impl Renderer {
             && taa
             && !frame.underwater
             && frame.clouds.as_ref().is_some_and(|c| !c.fast);
+        // The air as a volume: also reads the depth.
+        let atmosphere = self.atmosphere_on && taa && !frame.underwater && !frame.title;
         // Native water reads a copy of the frame and its depth from before translucent terrain.
         let water = self.water_on && taa && (!frame.underwater || self.water_tuning.underwater > 0);
         // Native water's underwater look: the frame dimmed and lit by the water's own pass.
@@ -4747,7 +4767,8 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth = pack_reads_world || raymarch || water || (taa && self.world_post.taa);
+        let keep_depth =
+            pack_reads_world || raymarch || atmosphere || water || (taa && self.world_post.taa);
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -4791,7 +4812,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world || raymarch || water,
+            pack_reads_world || raymarch || atmosphere || water,
         );
         if water && scaled.is_some() && self.water.is_none() {
             let instance_attributes = wgpu::vertex_attr_array![5=>Float32x4];
@@ -5176,6 +5197,7 @@ impl Renderer {
                         &self.queue,
                         self.config.format.remove_srgb_suffix(),
                         &mut self.raymarch_clouds,
+                        &mut self.raymarch_noise,
                         &mut encoder,
                         color,
                         depth,
@@ -5416,6 +5438,7 @@ impl Renderer {
                 &self.queue,
                 self.config.format.remove_srgb_suffix(),
                 &mut self.raymarch_clouds,
+                &mut self.raymarch_noise,
                 &mut encoder,
                 color,
                 depth,
@@ -5423,6 +5446,40 @@ impl Renderer {
                 jittered,
                 self.raymarch_tuning,
             );
+        }
+        if atmosphere && let Some((color, depth)) = &scaled {
+            let format = self.config.format.remove_srgb_suffix();
+            let (device, queue) = (&self.device, &self.queue);
+            let noise = self
+                .raymarch_noise
+                .get_or_insert_with(|| raymarch_clouds::noise_view(device, queue))
+                .clone();
+            let partial = f64::from(frame.shader_game_time * 24000.0).fract();
+            self.atmosphere
+                .get_or_insert_with(|| atmosphere::Atmosphere::new(device, format, noise))
+                .draw(
+                    device,
+                    queue,
+                    &mut encoder,
+                    color,
+                    depth,
+                    &atmosphere::Scene {
+                        view_proj: jittered,
+                        camera: frame.camera,
+                        time: (f64::from(frame.game_time).floor() + partial) / 20.0,
+                        sun_angle: frame.sky.sun_angle,
+                        fog_color: frame.sky.fog_color,
+                        distance: frame.distance,
+                        dimension: if frame.end_sky {
+                            atmosphere::Dimension::End
+                        } else if frame.nether_lighting {
+                            atmosphere::Dimension::Nether
+                        } else {
+                            atmosphere::Dimension::Overworld
+                        },
+                        tuning: self.atmosphere_tuning,
+                    },
+                );
         }
         if let Some((color, depth)) = &scaled
             && pack_post
@@ -6167,10 +6224,18 @@ mod tests {
         assert!(files.len() >= 10, "{files:?}");
         for path in files {
             let text = std::fs::read_to_string(&path).unwrap();
-            // entity.wgsl comes after the overlay's constants (entity_shader).
+            // entity.wgsl comes after the overlay's constants (entity_shader), water.wgsl
+            // after terrain.wgsl.
             let module = naga::front::wgsl::parse_str(&text)
                 .or_else(|_| {
                     naga::front::wgsl::parse_str(&(crate::overlay::wgsl_constants() + &text))
+                })
+                .or_else(|_| {
+                    naga::front::wgsl::parse_str(&format!(
+                        "{}
+{text}",
+                        include_str!("terrain.wgsl")
+                    ))
                 })
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             let info = naga::valid::Validator::new(

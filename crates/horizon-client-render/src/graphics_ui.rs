@@ -37,6 +37,9 @@ pub enum H {
     CloudAmbient,
     CloudSteps,
     CloudVariety,
+    Atmosphere,
+    AtmosphereDensity,
+    AtmosphereShafts,
     NativeWater,
     WaterClarity,
     WaterDepthColor,
@@ -271,9 +274,24 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Ray-marched clouds: how much banks of cloud differ in height, in blocks.",
             ),
             h(
+                H::Atmosphere,
+                High,
+                "Fog and sun shafts; lava haze and embers in the Nether; nebula in the End.",
+            ),
+            h(
+                H::AtmosphereDensity,
+                None,
+                "Ray-marched air: how thick the fog, haze and gas are.",
+            ),
+            h(
+                H::AtmosphereShafts,
+                None,
+                "Ray-marched air: how strong the sun shafts are.",
+            ),
+            h(
                 H::NativeWater,
                 Medium,
-                "Water with depth colour, waves, sky reflections, a sun glint, refraction and shore foam. Off is vanilla water.",
+                "Waves, reflections, refraction and foam on water. Off is vanilla.",
             ),
             h(
                 H::WaterClarity,
@@ -328,7 +346,7 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::WaterReflectionSteps,
                 Medium,
-                "Native water: samples along each reflected ray. More shows terrain, trees, mobs and clouds more cleanly; Off mirrors only the sky.",
+                "Native water: samples per reflected ray. Off mirrors only the sky.",
             ),
             h(
                 H::WaterReflectionDistance,
@@ -338,12 +356,12 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::WaterSelf,
                 Low,
-                "Native water: see yourself in the water, in first person too, wherever the water is near you.",
+                "Native water: your reflection, in first person too.",
             ),
             h(
                 H::WaterUnderwater,
                 Medium,
-                "Native water: the view under the surface: depth colour, light shafts, caustics and the surface seen from below. 0 is vanilla.",
+                "Native water: underwater light shafts, caustics, depth colour. 0 is vanilla.",
             ),
             h(
                 H::Fog,
@@ -495,6 +513,14 @@ fn extra_rows(level: Level, settings: &Settings) -> Vec<Row> {
             }))
         });
     }
+    if !settings.horizon.atmosphere {
+        rows.retain(|row| {
+            !matches!(row, Row::Setting(s) if matches!(
+                s.item,
+                Item::Horizon(H::AtmosphereDensity | H::AtmosphereShafts)
+            ))
+        });
+    }
     if !settings.horizon.water_shader {
         let tuning = [
             H::WaterClarity,
@@ -573,6 +599,8 @@ impl H {
             H::CloudAmbient => Some((g.cloud_ambient as f32 - 20.0) / 180.0),
             H::CloudSteps => Some((g.cloud_steps as f32 - 32.0) / 224.0),
             H::CloudVariety => Some(g.cloud_variety as f32 / 30.0),
+            H::AtmosphereDensity => Some((g.atmosphere_density as f32 - 20.0) / 280.0),
+            H::AtmosphereShafts => Some(g.atmosphere_shafts as f32 / 200.0),
             H::WaterClarity => Some((g.water_clarity as f32 - 2.0) / 38.0),
             H::WaterDepthColor => Some((g.water_depth_color as f32 - 20.0) / 180.0),
             H::WaterWaveHeight => Some(g.water_wave_height as f32 / 300.0),
@@ -611,6 +639,9 @@ impl H {
             },
             H::Sky => labelled("Sky", on_off(g.sky)),
             H::RaymarchedClouds => labelled("Ray-marched Clouds", on_off(g.cloud_raymarch)),
+            H::Atmosphere => labelled("Ray-marched Air", on_off(g.atmosphere)),
+            H::AtmosphereDensity => labelled("Air Density", format!("{}%", g.atmosphere_density)),
+            H::AtmosphereShafts => labelled("Sun Shafts", format!("{}%", g.atmosphere_shafts)),
             H::Fog => labelled("Fog", on_off(g.fog)),
             H::Weather => labelled("Weather", on_off(g.weather)),
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
@@ -736,6 +767,10 @@ impl H {
             H::CloudAmbient => g.cloud_ambient = (20.0 + (v * 18.0).round() * 10.0) as u32,
             H::CloudSteps => g.cloud_steps = (32.0 + (v * 14.0).round() * 16.0) as u32,
             H::CloudVariety => g.cloud_variety = (v * 30.0).round() as u32,
+            H::AtmosphereDensity => {
+                g.atmosphere_density = (20.0 + (v * 28.0).round() * 10.0) as u32
+            }
+            H::AtmosphereShafts => g.atmosphere_shafts = ((v * 20.0).round() * 10.0) as u32,
             H::WaterClarity => g.water_clarity = (2.0 + (v * 38.0).round()) as u32,
             H::WaterDepthColor => g.water_depth_color = (20.0 + (v * 18.0).round() * 10.0) as u32,
             H::WaterWaveHeight => g.water_wave_height = ((v * 30.0).round() * 10.0) as u32,
@@ -778,6 +813,7 @@ impl H {
             H::EntityCulling => g.entity_culling = !g.entity_culling,
             H::Sky => g.sky = !g.sky,
             H::RaymarchedClouds => g.cloud_raymarch = !g.cloud_raymarch,
+            H::Atmosphere => g.atmosphere = !g.atmosphere,
             H::NativeWater => g.water_shader = !g.water_shader,
             H::WaterSelf => g.water_self = !g.water_self,
             H::Fog => g.fog = !g.fog,
@@ -856,6 +892,7 @@ impl Item {
             Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::RaymarchedClouds) => g.cloud_raymarch,
+            Item::Horizon(H::Atmosphere) => g.atmosphere,
             Item::Horizon(H::NativeWater) => g.water_shader,
             Item::Horizon(H::WaterSelf) => g.water_self,
             Item::Horizon(H::Fog) => g.fog,

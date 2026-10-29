@@ -387,6 +387,12 @@ pub struct Graphics {
     pub cloud_steps: u32,
     /// How far banks of ray-marched cloud sit higher or lower, in blocks.
     pub cloud_variety: u32,
+    /// Ray-marched atmosphere: volumetric fog and sun shafts in the Overworld, a lava-lit haze
+    /// with embers in the Nether, nebula gas in the End (`gfx::atmosphere`). Density and shafts
+    /// are percent of the default.
+    pub atmosphere: bool,
+    pub atmosphere_density: u32,
+    pub atmosphere_shafts: u32,
     /// Native water: the surface of water drawn with depth colour, waves, reflections, a sun
     /// glint, refraction and foam (`gfx::water`).
     pub water_shader: bool,
@@ -466,6 +472,9 @@ impl Default for Graphics {
             cloud_ambient: 100,
             cloud_steps: 128,
             cloud_variety: 6,
+            atmosphere: false,
+            atmosphere_density: 100,
+            atmosphere_shafts: 100,
             water_shader: false,
             water_clarity: 14,
             water_depth_color: 100,
@@ -555,6 +564,13 @@ impl Graphics {
                 "cloudAmbient" => g.cloud_ambient = number(g.cloud_ambient).clamp(20, 200),
                 "cloudSteps" => g.cloud_steps = number(g.cloud_steps).clamp(32, 256),
                 "cloudVariety" => g.cloud_variety = number(g.cloud_variety).clamp(0, 30),
+                "atmosphere" => g.atmosphere = flag(g.atmosphere),
+                "atmosphereDensity" => {
+                    g.atmosphere_density = number(g.atmosphere_density).clamp(20, 300)
+                }
+                "atmosphereShafts" => {
+                    g.atmosphere_shafts = number(g.atmosphere_shafts).clamp(0, 200)
+                }
                 "waterShader" => g.water_shader = flag(g.water_shader),
                 "waterClarity" => g.water_clarity = number(g.water_clarity).clamp(2, 40),
                 "waterDepthColor" => {
@@ -613,7 +629,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\ncloudRaymarch:{}\ncloudThickness:{}\ncloudDensity:{}\ncloudDetail:{}\ncloudSun:{}\ncloudAmbient:{}\ncloudSteps:{}\ncloudVariety:{}\nwaterShader:{}\nwaterClarity:{}\nwaterDepthColor:{}\nwaterWaveHeight:{}\nwaterWaveSize:{}\nwaterWaveSpeed:{}\nwaterReflection:{}\nwaterGlint:{}\nwaterRefraction:{}\nwaterFoam:{}\nwaterFoamWidth:{}\nwaterReflectionSteps:{}\nwaterReflectionDistance:{}\nwaterSelfReflection:{}\nwaterUnderwater:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\ncloudRaymarch:{}\ncloudThickness:{}\ncloudDensity:{}\ncloudDetail:{}\ncloudSun:{}\ncloudAmbient:{}\ncloudSteps:{}\ncloudVariety:{}\natmosphere:{}\natmosphereDensity:{}\natmosphereShafts:{}\nwaterShader:{}\nwaterClarity:{}\nwaterDepthColor:{}\nwaterWaveHeight:{}\nwaterWaveSize:{}\nwaterWaveSpeed:{}\nwaterReflection:{}\nwaterGlint:{}\nwaterRefraction:{}\nwaterFoam:{}\nwaterFoamWidth:{}\nwaterReflectionSteps:{}\nwaterReflectionDistance:{}\nwaterSelfReflection:{}\nwaterUnderwater:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -647,6 +663,9 @@ impl Graphics {
             self.cloud_ambient,
             self.cloud_steps,
             self.cloud_variety,
+            bool_text(self.atmosphere),
+            self.atmosphere_density,
+            self.atmosphere_shafts,
             bool_text(self.water_shader),
             self.water_clarity,
             self.water_depth_color,
@@ -805,6 +824,9 @@ mod tests {
             cloud_ambient: 80,
             cloud_steps: 96,
             cloud_variety: 12,
+            atmosphere: true,
+            atmosphere_density: 100,
+            atmosphere_shafts: 100,
             water_shader: true,
             water_clarity: 20,
             water_depth_color: 130,
