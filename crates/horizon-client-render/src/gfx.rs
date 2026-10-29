@@ -95,6 +95,7 @@ mod pack_weather;
 mod page_runs;
 pub mod panorama;
 mod readback;
+pub mod raymarch_clouds;
 mod resident;
 mod stars;
 mod sunrise_fan;
@@ -557,6 +558,10 @@ pub struct Renderer {
     occlusion: occlusion::Occlusion,
     /// Resolution scale, FXAA and TAA (Horizon settings).
     world_post: world_post::Post,
+    /// Ray-marched clouds (Horizon setting), built when first drawn.
+    raymarch_clouds_on: bool,
+    raymarch_tuning: raymarch_clouds::Tuning,
+    raymarch_clouds: Option<raymarch_clouds::RaymarchClouds>,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
@@ -2731,6 +2736,9 @@ impl Renderer {
             block_entity_revision: next_block_entity_revision(),
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             world_post,
+            raymarch_clouds_on: false,
+            raymarch_tuning: Default::default(),
+            raymarch_clouds: None,
             hdr: None,
             hdr_output,
             hdr_marker: None,
@@ -3384,6 +3392,11 @@ impl Renderer {
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
     }
+    /// Draws the fancy clouds as a ray-marched volume (`raymarch_clouds`).
+    pub fn set_raymarch_clouds(&mut self, on: bool, tuning: raymarch_clouds::Tuning) {
+        self.raymarch_clouds_on = on;
+        self.raymarch_tuning = tuning;
+    }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) pair.
     /// Returns the programs that run and the notes of loading them.
@@ -3776,6 +3789,11 @@ impl Renderer {
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
             && self.native.as_ref().is_none_or(|n| n.post.is_none());
+        // Fancy clouds as a volume: the world is drawn to a target whose depth it can read.
+        let raymarch = self.raymarch_clouds_on
+            && taa
+            && !frame.underwater
+            && frame.clouds.as_ref().is_some_and(|c| !c.fast);
         let jittered = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,
@@ -4397,7 +4415,7 @@ impl Renderer {
             + shadow_quads
             + translucent_particle_quads
             + translucent_item_quads;
-        let cloud_quads = if let Some(input) = &frame.clouds {
+        let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| !raymarch) {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
             let vertices = self.cloud_mesh.vertices.len() as u64;
@@ -4642,7 +4660,7 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth = pack_reads_world || (taa && self.world_post.taa);
+        let keep_depth = pack_reads_world || raymarch || (taa && self.world_post.taa);
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -4686,7 +4704,7 @@ impl Renderer {
         let scaled = self.world_post.prepare(
             &self.device,
             [self.config.width, self.config.height],
-            pack_reads_world,
+            pack_reads_world || raymarch,
         );
         let (world_view, world_depth) = match &scaled {
             Some((color, depth)) => (color, depth),
@@ -5119,6 +5137,31 @@ impl Renderer {
                     0..1,
                 );
             }
+        }
+        if raymarch
+            && let Some((color, depth)) = &scaled
+            && let Some(input) = &frame.clouds
+        {
+            let format = self.config.format.remove_srgb_suffix();
+            let (device, queue) = (&self.device, &self.queue);
+            let sky = &frame.sky;
+            self.raymarch_clouds
+                .get_or_insert_with(|| raymarch_clouds::RaymarchClouds::new(device, queue, format))
+                .draw(
+                    device,
+                    queue,
+                    &mut encoder,
+                    color,
+                    depth,
+                    &raymarch_clouds::Scene {
+                        input,
+                        view_proj: jittered,
+                        sun_angle: sky.sun_angle,
+                        fog_color: sky.fog_color,
+                        fog_end: sky.cloud_fog_end,
+                        tuning: self.raymarch_tuning,
+                    },
+                );
         }
         if let Some((color, depth)) = &scaled
             && pack_post

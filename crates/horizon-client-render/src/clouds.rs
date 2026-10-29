@@ -100,7 +100,8 @@ pub(crate) struct Uniform {
 }
 
 impl Input<'_> {
-    fn state(&self) -> (MeshKey, Uniform) {
+    /// The camera's place in the cloud map, in blocks: moved by the wind, wrapped to the map.
+    fn map_position(&self) -> (f64, f64) {
         let (w, h, _) = self.texture;
         let offset = self.time.rem_euclid(i64::from(*w) * 400) as f64 + self.partial_tick;
         let mut x = self.camera.x + offset * 0.030_000_001;
@@ -108,6 +109,17 @@ impl Input<'_> {
         let (tw, th) = (f64::from(*w) * 12.0, f64::from(*h) * 12.0);
         x -= (x / tw).floor() * tw;
         z -= (z / th).floor() * th;
+        (x, z)
+    }
+
+    /// `map_position` for the ray-marched clouds.
+    pub(crate) fn map_origin(&self) -> [f32; 2] {
+        let (x, z) = self.map_position();
+        [x as f32, z as f32]
+    }
+
+    fn state(&self) -> (MeshKey, Uniform) {
+        let (x, z) = self.map_position();
         let cell_x = (x / 12.0).floor() as i64;
         let cell_z = (z / 12.0).floor() as i64;
         let bottom = (192.33 - self.camera.y) as f32;

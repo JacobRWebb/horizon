@@ -29,6 +29,14 @@ pub enum H {
     ChunkUpdates,
     UploadBudget,
     Sky,
+    RaymarchedClouds,
+    CloudThickness,
+    CloudDensity,
+    CloudDetail,
+    CloudSun,
+    CloudAmbient,
+    CloudSteps,
+    CloudVariety,
     Fog,
     Weather,
     AnimatedTextures,
@@ -208,6 +216,46 @@ pub fn rows(level: Level) -> Vec<Row> {
             v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
             h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
             h(
+                H::RaymarchedClouds,
+                High,
+                "Clouds as a lit, volumetric layer instead of blocks. Needs Clouds on.",
+            ),
+            h(
+                H::CloudThickness,
+                Low,
+                "Ray-marched clouds: how tall they are, in blocks.",
+            ),
+            h(
+                H::CloudDensity,
+                Low,
+                "Ray-marched clouds: how thick and opaque they are.",
+            ),
+            h(
+                H::CloudDetail,
+                Low,
+                "Ray-marched clouds: how ragged and billowy the shapes are.",
+            ),
+            h(
+                H::CloudSun,
+                None,
+                "Ray-marched clouds: how strongly the sun lights them.",
+            ),
+            h(
+                H::CloudAmbient,
+                None,
+                "Ray-marched clouds: how bright their shadowed sides are.",
+            ),
+            h(
+                H::CloudSteps,
+                High,
+                "Ray-marched clouds: most samples per ray. Lower is faster, grainier.",
+            ),
+            h(
+                H::CloudVariety,
+                None,
+                "Ray-marched clouds: how much banks of cloud differ in height, in blocks.",
+            ),
+            h(
                 H::Fog,
                 None,
                 "Distance fog. Off shows the edge of the loaded world.",
@@ -340,6 +388,23 @@ fn extra_rows(level: Level, settings: &Settings) -> Vec<Row> {
     if !settings.horizon.taa {
         rows.retain(|row| !matches!(row, Row::Setting(s) if s.item == Item::Horizon(H::Upscaling)));
     }
+    if !settings.horizon.cloud_raymarch {
+        let tuning = [
+            H::CloudThickness,
+            H::CloudDensity,
+            H::CloudDetail,
+            H::CloudSun,
+            H::CloudAmbient,
+            H::CloudSteps,
+            H::CloudVariety,
+        ];
+        rows.retain(|row| {
+            !matches!(row, Row::Setting(s) if tuning.contains(&match s.item {
+                Item::Horizon(h) => h,
+                _ => H::Preset,
+            }))
+        });
+    }
     // Drop headings whose settings were all on the parent screens.
     let mut has_setting = false;
     rows.reverse();
@@ -387,6 +452,13 @@ impl H {
             }),
             H::HdrBlackLevel => Some(g.hdr_black_level as f32 / 100.0),
             H::HdrUiBrightness => Some((g.hdr_ui_brightness as f32 - 25.0) / 75.0),
+            H::CloudThickness => Some((g.cloud_thickness as f32 - 4.0) / 36.0),
+            H::CloudDensity => Some((g.cloud_density as f32 - 20.0) / 280.0),
+            H::CloudDetail => Some(g.cloud_detail as f32 / 200.0),
+            H::CloudSun => Some(g.cloud_sun as f32 / 200.0),
+            H::CloudAmbient => Some((g.cloud_ambient as f32 - 20.0) / 180.0),
+            H::CloudSteps => Some((g.cloud_steps as f32 - 32.0) / 224.0),
+            H::CloudVariety => Some(g.cloud_variety as f32 / 30.0),
             _ => None,
         }
     }
@@ -411,6 +483,7 @@ impl H {
                 k => labelled("Upload Budget", format!("{k} KiB/frame")),
             },
             H::Sky => labelled("Sky", on_off(g.sky)),
+            H::RaymarchedClouds => labelled("Ray-marched Clouds", on_off(g.cloud_raymarch)),
             H::Fog => labelled("Fog", on_off(g.fog)),
             H::Weather => labelled("Weather", on_off(g.weather)),
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
@@ -454,6 +527,18 @@ impl H {
                 format!("{:.2} nits", g.hdr_black_level as f32 / 100.0),
             ),
             H::HdrUiBrightness => labelled("UI Brightness", format!("{}%", g.hdr_ui_brightness)),
+            H::CloudThickness => {
+                labelled("Cloud Thickness", format!("{} blocks", g.cloud_thickness))
+            }
+            H::CloudDensity => labelled("Cloud Density", format!("{}%", g.cloud_density)),
+            H::CloudDetail => labelled("Cloud Detail", format!("{}%", g.cloud_detail)),
+            H::CloudSun => labelled("Cloud Sunlight", format!("{}%", g.cloud_sun)),
+            H::CloudAmbient => labelled("Cloud Shadow Light", format!("{}%", g.cloud_ambient)),
+            H::CloudSteps => labelled("Cloud Quality", format!("{} steps", g.cloud_steps)),
+            H::CloudVariety => labelled(
+                "Cloud Height Variety",
+                format!("{} blocks", g.cloud_variety),
+            ),
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             H::Overlay => labelled(
@@ -490,6 +575,13 @@ impl H {
             }
             H::HdrBlackLevel => g.hdr_black_level = (v * 100.0).round() as u32,
             H::HdrUiBrightness => g.hdr_ui_brightness = (25.0 + (v * 15.0).round() * 5.0) as u32,
+            H::CloudThickness => g.cloud_thickness = (4.0 + (v * 18.0).round() * 2.0) as u32,
+            H::CloudDensity => g.cloud_density = (20.0 + (v * 28.0).round() * 10.0) as u32,
+            H::CloudDetail => g.cloud_detail = ((v * 20.0).round() * 10.0) as u32,
+            H::CloudSun => g.cloud_sun = ((v * 20.0).round() * 10.0) as u32,
+            H::CloudAmbient => g.cloud_ambient = (20.0 + (v * 18.0).round() * 10.0) as u32,
+            H::CloudSteps => g.cloud_steps = (32.0 + (v * 14.0).round() * 16.0) as u32,
+            H::CloudVariety => g.cloud_variety = (v * 30.0).round() as u32,
             _ => {}
         }
     }
@@ -516,6 +608,7 @@ impl H {
             H::CaveCulling => g.cave_culling = !g.cave_culling,
             H::EntityCulling => g.entity_culling = !g.entity_culling,
             H::Sky => g.sky = !g.sky,
+            H::RaymarchedClouds => g.cloud_raymarch = !g.cloud_raymarch,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
@@ -591,6 +684,7 @@ impl Item {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
             Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
+            Item::Horizon(H::RaymarchedClouds) => g.cloud_raymarch,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,

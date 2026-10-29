@@ -294,6 +294,18 @@ impl Game<'_> {
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
             );
+            r.set_raymarch_clouds(
+                s.horizon.cloud_raymarch,
+                horizon_client::gfx::raymarch_clouds::Tuning {
+                    thickness: s.horizon.cloud_thickness,
+                    density: s.horizon.cloud_density,
+                    detail: s.horizon.cloud_detail,
+                    sun: s.horizon.cloud_sun,
+                    ambient: s.horizon.cloud_ambient,
+                    steps: s.horizon.cloud_steps,
+                    variety: s.horizon.cloud_variety,
+                },
+            );
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.paper_white_nits() as f32,
