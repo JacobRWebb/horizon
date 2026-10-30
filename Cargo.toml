@@ -61,6 +61,14 @@ wgpu-hal = { path = "third_party/wgpu-hal" }
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies and build scripts are never stepped through: no debug info for
+# them, and build scripts/proc macros run optimized.
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
@@ -71,3 +79,22 @@ inherits = "release"
 lto = false
 codegen-units = 16
 incremental = true
+# The game crates stay at opt-level 1 for build speed (the horizon-client bin
+# alone took 100s of a 217s clean build at 3); the hot crates and every
+# dependency (wgpu, naga, ...) keep full optimization.
+opt-level = 1
+
+[profile.fast.package."*"]
+opt-level = 3
+
+[profile.fast.package.horizon-world]
+opt-level = 3
+
+[profile.fast.package.horizon-core]
+opt-level = 3
+
+[profile.fast.package.horizon-client-render]
+opt-level = 3
+
+[profile.fast.package.horizon-assets]
+opt-level = 3
